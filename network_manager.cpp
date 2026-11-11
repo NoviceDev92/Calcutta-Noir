@@ -543,6 +543,9 @@ void NetworkManager::processTcpPacket(QTcpSocket *socket, const QJsonObject &jso
                     p.isSpinning = json.value("spin").toBool(p.isSpinning);
                     p.isDrifting = json.value("drift").toBool(p.isDrifting);
                     p.heldItem = json.value("item").toInt(p.heldItem);
+                    p.hull = json.value("hull").toDouble(p.hull);
+                    p.progressMeters = json.value("prog").toDouble(p.progressMeters);
+                    p.isEliminated = json.value("elim").toBool(p.isEliminated);
                     break;
                 }
             }
@@ -595,6 +598,58 @@ void NetworkManager::processTcpPacket(QTcpSocket *socket, const QJsonObject &jso
             if (allDone) {
                 emit allPlayersFinished();
             }
+        } else if (type == "CP_READY") {
+            int pId = json.value("id").toInt(-1);
+            int cpIdx = json.value("cp").toInt(0);
+            bool ready = json.value("ready").toBool(false);
+            for (auto &p : players) {
+                if (p.id == pId) {
+                    p.atCheckpoint = true;
+                    p.checkpointIdx = cpIdx;
+                    p.checkpointReady = ready;
+                    break;
+                }
+            }
+            // Broadcast checkpoint sync state to everyone
+            QJsonObject syncMsg;
+            syncMsg["type"] = "CP_SYNC";
+            syncMsg["cp"] = cpIdx;
+            syncMsg["players"] = serializePlayers();
+            broadcastTcpJson(syncMsg);
+            emit checkpointLobbyUpdated();
+
+            // Check if all surviving (non-eliminated) players are ready at this checkpoint
+            bool allReady = !players.empty();
+            for (const auto &p : players) {
+                if (!p.isEliminated && (!p.checkpointReady || p.checkpointIdx != cpIdx)) {
+                    allReady = false;
+                    break;
+                }
+            }
+            if (allReady) {
+                for (auto &p : players) {
+                    p.atCheckpoint = false;
+                    p.checkpointReady = false;
+                }
+                QJsonObject goMsg;
+                goMsg["type"] = "CP_ROLLOUT";
+                goMsg["cp"] = cpIdx;
+                broadcastTcpJson(goMsg);
+                emit checkpointRolloutTriggered(cpIdx);
+            }
+        } else if (type == "PLAYER_ELIMINATED") {
+            int pId = json.value("id").toInt(-1);
+            for (auto &p : players) {
+                if (p.id == pId) {
+                    p.isEliminated = true;
+                    p.raceFinished = true;
+                    p.finishTime = 9999.0;
+                    break;
+                }
+            }
+            broadcastTcpJson(json);
+            emit remoteKartUpdated(pId);
+            emit checkpointLobbyUpdated();
         }
     } else if (role == NetworkRole::CLIENT) {
         if (type == "JOIN_ACK") {
@@ -633,6 +688,9 @@ void NetworkManager::processTcpPacket(QTcpSocket *socket, const QJsonObject &jso
                         p.isSpinning = json.value("spin").toBool(p.isSpinning);
                         p.isDrifting = json.value("drift").toBool(p.isDrifting);
                         p.heldItem = json.value("item").toInt(p.heldItem);
+                        p.hull = json.value("hull").toDouble(p.hull);
+                        p.progressMeters = json.value("prog").toDouble(p.progressMeters);
+                        p.isEliminated = json.value("elim").toBool(p.isEliminated);
                         break;
                     }
                 }
@@ -673,8 +731,33 @@ void NetworkManager::processTcpPacket(QTcpSocket *socket, const QJsonObject &jso
                 p.raceFinished = false;
                 p.finishTime = 0.0;
                 p.isReady = false;
+                p.isEliminated = false;
+                p.atCheckpoint = false;
+                p.checkpointReady = false;
             }
             emit returnedToLobby();
+        } else if (type == "CP_SYNC") {
+            deserializePlayers(json.value("players").toArray());
+            emit checkpointLobbyUpdated();
+        } else if (type == "CP_ROLLOUT") {
+            int cpIdx = json.value("cp").toInt(0);
+            for (auto &p : players) {
+                p.atCheckpoint = false;
+                p.checkpointReady = false;
+            }
+            emit checkpointRolloutTriggered(cpIdx);
+        } else if (type == "PLAYER_ELIMINATED") {
+            int pId = json.value("id").toInt(-1);
+            for (auto &p : players) {
+                if (p.id == pId) {
+                    p.isEliminated = true;
+                    p.raceFinished = true;
+                    p.finishTime = 9999.0;
+                    break;
+                }
+            }
+            emit remoteKartUpdated(pId);
+            emit checkpointLobbyUpdated();
         }
     }
 }
@@ -692,6 +775,10 @@ QJsonArray NetworkManager::serializePlayers() const
         obj["finished"] = p.raceFinished;
         obj["time"] = p.finishTime;
         obj["placement"] = p.placement;
+        obj["elim"] = p.isEliminated;
+        obj["atCp"] = p.atCheckpoint;
+        obj["cpIdx"] = p.checkpointIdx;
+        obj["cpReady"] = p.checkpointReady;
         arr.append(obj);
     }
     return arr;
@@ -711,6 +798,10 @@ void NetworkManager::deserializePlayers(const QJsonArray &arr)
         p.raceFinished = obj.value("finished").toBool();
         p.finishTime = obj.value("time").toDouble();
         p.placement = obj.value("placement").toInt();
+        p.isEliminated = obj.value("elim").toBool();
+        p.atCheckpoint = obj.value("atCp").toBool();
+        p.checkpointIdx = obj.value("cpIdx").toInt();
+        p.checkpointReady = obj.value("cpReady").toBool();
 
         // Preserve coordinates from existing entry if present
         for (const auto &existing : players) {
@@ -810,7 +901,8 @@ void NetworkManager::startRace()
     }
 }
 
-void NetworkManager::broadcastLocalKartState(double x, double z, double angle, double speed, int lap, bool finished, double finishTime, bool spinning, bool drifting, int heldItem)
+void NetworkManager::broadcastLocalKartState(double x, double z, double angle, double speed, int lap, bool finished, double finishTime, bool spinning, bool drifting, int heldItem,
+                                             double hull, double progressMeters, bool isEliminated)
 {
     QJsonObject msg;
     msg["type"] = "KART_STATE";
@@ -825,6 +917,9 @@ void NetworkManager::broadcastLocalKartState(double x, double z, double angle, d
     msg["spin"] = spinning;
     msg["drift"] = drifting;
     msg["item"] = heldItem;
+    msg["hull"] = hull;
+    msg["prog"] = progressMeters;
+    msg["elim"] = isEliminated;
 
     if (role == NetworkRole::HOST) {
         // Update player 0 locally and forward to clients
@@ -840,6 +935,9 @@ void NetworkManager::broadcastLocalKartState(double x, double z, double angle, d
                 p.isSpinning = spinning;
                 p.isDrifting = drifting;
                 p.heldItem = heldItem;
+                p.hull = hull;
+                p.progressMeters = progressMeters;
+                p.isEliminated = isEliminated;
                 break;
             }
         }
@@ -907,6 +1005,76 @@ void NetworkManager::notifyLocalFinish(double finishTime)
         msg["type"] = "PLAYER_FINISHED";
         msg["id"] = localPlayerId;
         msg["time"] = finishTime;
+        sendTcpJson(clientSocket, msg);
+    }
+}
+
+void NetworkManager::sendCheckpointReady(int cpIndex, bool ready)
+{
+    if (role == NetworkRole::HOST) {
+        for (auto &p : players) {
+            if (p.id == 0) {
+                p.atCheckpoint = true;
+                p.checkpointIdx = cpIndex;
+                p.checkpointReady = ready;
+                break;
+            }
+        }
+        QJsonObject syncMsg;
+        syncMsg["type"] = "CP_SYNC";
+        syncMsg["cp"] = cpIndex;
+        syncMsg["players"] = serializePlayers();
+        broadcastTcpJson(syncMsg);
+        emit checkpointLobbyUpdated();
+
+        bool allReady = !players.empty();
+        for (const auto &p : players) {
+            if (!p.isEliminated && (!p.checkpointReady || p.checkpointIdx != cpIndex)) {
+                allReady = false;
+                break;
+            }
+        }
+        if (allReady) {
+            for (auto &p : players) {
+                p.atCheckpoint = false;
+                p.checkpointReady = false;
+            }
+            QJsonObject goMsg;
+            goMsg["type"] = "CP_ROLLOUT";
+            goMsg["cp"] = cpIndex;
+            broadcastTcpJson(goMsg);
+            emit checkpointRolloutTriggered(cpIndex);
+        }
+    } else if (role == NetworkRole::CLIENT) {
+        QJsonObject msg;
+        msg["type"] = "CP_READY";
+        msg["id"] = localPlayerId;
+        msg["cp"] = cpIndex;
+        msg["ready"] = ready;
+        sendTcpJson(clientSocket, msg);
+    }
+}
+
+void NetworkManager::sendEliminated()
+{
+    if (role == NetworkRole::HOST) {
+        for (auto &p : players) {
+            if (p.id == 0) {
+                p.isEliminated = true;
+                p.raceFinished = true;
+                p.finishTime = 9999.0;
+                break;
+            }
+        }
+        QJsonObject msg;
+        msg["type"] = "PLAYER_ELIMINATED";
+        msg["id"] = 0;
+        broadcastTcpJson(msg);
+        emit checkpointLobbyUpdated();
+    } else if (role == NetworkRole::CLIENT) {
+        QJsonObject msg;
+        msg["type"] = "PLAYER_ELIMINATED";
+        msg["id"] = localPlayerId;
         sendTcpJson(clientSocket, msg);
     }
 }

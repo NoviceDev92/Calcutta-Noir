@@ -23,6 +23,8 @@ private slots:
     void on_btnReset_clicked();
     void on_btnCelebration_clicked();
     void onStatsUpdated(double speed, int lap, double x, double z, double angle, QString surface);
+    void onSurvivalTelemetryUpdated(double hull, double evacTime, int rank, int totalRacers,
+                                    int progressPct, int scrap, QString district);
 
 private:
     Ui::MainWindow *ui;

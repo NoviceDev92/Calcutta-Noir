@@ -12,6 +12,12 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+// ============================================================================
+// KOLKATA: LAST EXIT — Overhauled Software-Rasterized Apocalyptic Engine
+// Pure Qt QImage CPU rendering: Story Intro, Continuous 3-Stage Escape,
+// Synchronized Checkpoint Pit-Stops, 3D Particles & Dynamic Firelight.
+// ============================================================================
+
 GameCanvas::GameCanvas(QWidget *parent)
     : QWidget(parent),
       screenBuffer(BUFFER_WIDTH, BUFFER_HEIGHT, QImage::Format_RGB32),
@@ -21,11 +27,15 @@ GameCanvas::GameCanvas(QWidget *parent)
     setFocusPolicy(Qt::StrongFocus);
     setMinimumSize(400, 300);
 
-    initCharacters();
-    initTrackWaypoints();
-    initTrackMaps();
-    generateDonutPlains();
-    currentState = GameState::TITLE_MENU;
+    initVehicles();
+    initStageWaypoints();
+    initStageMaps();
+    generateStage(KolkataStage::GARIAHAT_COLLAPSE);
+    initAshParticles();
+
+    // Boot directly into the animated pixel-art story cutscene
+    currentState = GameState::STORY_INTRO;
+    storyTimer = 0.0;
 
     initNetworkManager();
 
@@ -34,82 +44,125 @@ GameCanvas::GameCanvas(QWidget *parent)
     frameTimer.start();
 }
 
-void GameCanvas::initCharacters()
+void GameCanvas::initVehicles()
 {
-    characters = {
-        // ID 0: Mario — Balanced
-        {
-            0, "MARIO", "BALANCED",
-            "All-around master with balanced top speed, responsive grip, and reliable acceleration.",
-            QColor(220, 20, 20),    // Crimson Red
-            QColor(245, 245, 245),  // Crisp White
-            QColor(240, 240, 255),  // Fire Mario White
-            160.0,                  // maxSpeed (km/h)
-            110.0,                  // accel (m/s^2)
-            2.80,                   // turnRate (rad/s)
-            1.00,                   // driftFactor
-            1.00,                   // weight
-            3, 3, 3, 3              // Pips: 3 SPD, 3 ACC, 3 HND, 3 WGT
-        },
-        // ID 1: Bowser — Heavyweight
-        {
-            1, "BOWSER", "HEAVYWEIGHT",
-            "Tremendous 175 km/h top speed and heavy collision weight; slower initial throttle.",
-            QColor(35, 115, 45),    // Dark Green
-            QColor(240, 140, 20),   // Fiery Orange
-            QColor(60, 60, 65),     // Dry Bowser Charcoal
-            175.0,                  // maxSpeed (km/h)
-            85.0,                   // accel (m/s^2)
-            2.20,                   // turnRate (rad/s)
-            0.85,                   // driftFactor
-            1.60,                   // weight
-            5, 1, 1, 5              // Pips: 5 SPD, 1 ACC, 1 HND, 5 WGT
-        },
-        // ID 2: Peach — Agility
-        {
-            2, "PEACH", "AGILITY",
-            "Extreme 3.4 rad/s cornering agility and high drift control for mastering hairpin bends.",
-            QColor(245, 130, 175),  // Princess Pink
-            QColor(255, 215, 0),    // Royal Gold
-            QColor(255, 180, 50),   // Daisy Orange
-            152.0,                  // maxSpeed (km/h)
-            125.0,                  // accel (m/s^2)
-            3.40,                   // turnRate (rad/s)
-            1.25,                   // driftFactor
-            0.75,                   // weight
-            2, 4, 5, 2              // Pips: 2 SPD, 4 ACC, 5 HND, 2 WGT
-        },
-        // ID 3: Toad — Acceleration
-        {
-            3, "TOAD", "ACCELERATION",
-            "Explosive 140 m/s^2 acceleration and lightning-fast hazard recovery off the line.",
-            QColor(25, 95, 220),    // Royal Blue
-            QColor(245, 245, 245),  // Mushroom White
-            QColor(245, 210, 30),   // Yellow Toad
-            148.0,                  // maxSpeed (km/h)
-            140.0,                  // accel (m/s^2)
-            3.10,                   // turnRate (rad/s)
-            1.15,                   // driftFactor
-            0.65,                   // weight
-            2, 5, 4, 1              // Pips: 2 SPD, 5 ACC, 4 HND, 1 WGT
+    const auto &roster = GarageSystem::instance().vehicleRoster();
+    vehicles.assign(roster.begin(), roster.end());
+    selectedVehicleP1 = GarageSystem::instance().selectedVehicle();
+}
+
+const VehicleDef& GameCanvas::getSelectedVehicleP1() const
+{
+    static VehicleDef fallback;
+    if (vehicles.empty()) return fallback;
+    int idx = (selectedVehicleP1 % static_cast<int>(vehicles.size()) + static_cast<int>(vehicles.size())) % static_cast<int>(vehicles.size());
+    return vehicles[idx];
+}
+
+const VehicleDef& GameCanvas::getSelectedVehicleP2() const
+{
+    static VehicleDef fallback;
+    if (vehicles.empty()) return fallback;
+    int idx = (selectedVehicleP2 % static_cast<int>(vehicles.size()) + static_cast<int>(vehicles.size())) % static_cast<int>(vehicles.size());
+    return vehicles[idx];
+}
+
+void GameCanvas::initStageWaypoints()
+{
+    QImage dummyVis(16, 16, QImage::Format_RGB32);
+    QImage dummyMask(16, 16, QImage::Format_RGB32);
+    std::vector<WorldSprite> tmpSprites;
+    std::vector<CollapsingStructure> tmpCollapsing;
+    std::vector<TrackHazard> tmpHazards;
+    std::vector<CheckpointDef> tmpCps;
+
+    for (int i = 0; i < 3; ++i) {
+        kolkataMap.generateStage(static_cast<KolkataStage>(i),
+                                 dummyVis, dummyMask,
+                                 tmpSprites, tmpCollapsing, tmpHazards,
+                                 stageWaypoints[i], tmpCps);
+    }
+    currentWaypoints = stageWaypoints[static_cast<int>(currentStage)];
+}
+
+void GameCanvas::initStageMaps()
+{
+    generateStage(currentStage);
+}
+
+void GameCanvas::generateStage(KolkataStage stage)
+{
+    kolkataMap.generateStage(stage,
+                             trackVisualMap, trackMaskMap,
+                             worldSprites, collapsingStructures, trackHazards,
+                             currentWaypoints, stageCheckpoints);
+
+    stageWaypoints[static_cast<int>(stage)] = currentWaypoints;
+    rebuildSplineMetrics();
+
+    hazardSystem.reset();
+    hazardSystem.setStageDifficulty(stage);
+    for (const auto &cs : collapsingStructures) {
+        hazardSystem.addCollapsingStructure(cs);
+    }
+    for (const auto &hz : trackHazards) {
+        hazardSystem.addTrackHazard(hz);
+    }
+
+    updateMinimapTrackCache();
+}
+
+void GameCanvas::rebuildSplineMetrics()
+{
+    waypointCumDist.clear();
+    totalRouteLength = 0.0;
+    if (currentWaypoints.empty()) return;
+
+    waypointCumDist.reserve(currentWaypoints.size());
+    waypointCumDist.push_back(0.0);
+    for (size_t i = 1; i < currentWaypoints.size(); ++i) {
+        double dx = currentWaypoints[i].x() - currentWaypoints[i - 1].x();
+        double dz = currentWaypoints[i].y() - currentWaypoints[i - 1].y();
+        totalRouteLength += std::hypot(dx, dz);
+        waypointCumDist.push_back(totalRouteLength);
+    }
+    if (totalRouteLength < 1.0) totalRouteLength = 1.0;
+}
+
+double GameCanvas::computeSplineProgress(double px, double pz, double *outMeters) const
+{
+    if (currentWaypoints.size() < 2) {
+        if (outMeters) *outMeters = 0.0;
+        return 0.0;
+    }
+
+    double bestDistSq = 1e18;
+    double bestMeters = 0.0;
+
+    for (size_t i = 0; i + 1 < currentWaypoints.size(); ++i) {
+        double ax = currentWaypoints[i].x();
+        double az = currentWaypoints[i].y();
+        double bx = currentWaypoints[i + 1].x();
+        double bz = currentWaypoints[i + 1].y();
+
+        double abx = bx - ax;
+        double abz = bz - az;
+        double lenSq = abx * abx + abz * abz;
+        double t = 0.0;
+        if (lenSq > 1e-6) {
+            t = std::clamp(((px - ax) * abx + (pz - az) * abz) / lenSq, 0.0, 1.0);
         }
-    };
-}
+        double cx = ax + t * abx;
+        double cz = az + t * abz;
+        double dSq = (px - cx) * (px - cx) + (pz - cz) * (pz - cz);
+        if (dSq < bestDistSq) {
+            bestDistSq = dSq;
+            bestMeters = waypointCumDist[i] + t * std::sqrt(lenSq);
+        }
+    }
 
-const CharacterDef& GameCanvas::getSelectedCharacterP1() const
-{
-    static CharacterDef fallback;
-    if (characters.empty()) return fallback;
-    int idx = (selectedCharP1 % static_cast<int>(characters.size()) + characters.size()) % characters.size();
-    return characters[idx];
-}
-
-const CharacterDef& GameCanvas::getSelectedCharacterP2() const
-{
-    static CharacterDef fallback;
-    if (characters.empty()) return fallback;
-    int idx = (selectedCharP2 % static_cast<int>(characters.size()) + characters.size()) % characters.size();
-    return characters[idx];
+    if (outMeters) *outMeters = bestMeters;
+    return std::clamp(bestMeters / totalRouteLength, 0.0, 1.0);
 }
 
 void GameCanvas::setGameState(GameState state)
@@ -119,268 +172,328 @@ void GameCanvas::setGameState(GameState state)
     update();
 }
 
-void GameCanvas::setTrackLevel(TrackLevel level)
+void GameCanvas::setStage(KolkataStage stage)
 {
-    currentLevel = level;
-    switch (currentLevel) {
-    case TrackLevel::DONUT_PLAINS:
-        generateDonutPlains();
-        break;
-    case TrackLevel::CHOCO_VALLEY:
-        generateChocoValley();
-        break;
-    case TrackLevel::BOWSER_CASTLE:
-        generateBowserCastle();
-        break;
-    }
-    currentTrackWaypoints = trackWaypoints[static_cast<int>(currentLevel)];
-    if (currentState == GameState::RACING || currentState == GameState::RACE_FINISHED) {
-        startRace();
+    currentStage = stage;
+    activeCheckpointSave.valid = false;
+    generateStage(currentStage);
+    if (currentState == GameState::RACING || currentState == GameState::RACE_FINISHED || currentState == GameState::CHECKPOINT_PIT) {
+        startRace(false);
     }
     update();
 }
 
-void GameCanvas::startRace()
+void GameCanvas::startRace(bool resumeFromCheckpoint)
 {
     isNetworkRace = false;
-    if (characters.empty()) {
-        initCharacters();
-    }
-
+    if (vehicles.empty()) initVehicles();
     pressedKeys.clear();
 
-    switch (currentLevel) {
-    case TrackLevel::DONUT_PLAINS:
-        generateDonutPlains();
-        break;
-    case TrackLevel::CHOCO_VALLEY:
-        generateChocoValley();
-        break;
-    case TrackLevel::BOWSER_CASTLE:
-        generateBowserCastle();
-        break;
+    if (resumeFromCheckpoint && activeCheckpointSave.valid) {
+        currentStage = activeCheckpointSave.stage;
     }
+    generateStage(currentStage);
 
-    const CharacterDef &p1 = getSelectedCharacterP1();
-    this->maxSpeed = p1.maxSpeed;
-    this->accel = p1.accel;
-    this->brakeDecel = 240.0;
-    this->turnRate = p1.turnRate;
-    this->driftFactor = p1.driftFactor;
-    this->weight = p1.weight;
+    GarageSystem &garage = GarageSystem::instance();
+    garage.selectVehicle(selectedVehicleP1);
+    VehicleDef v1 = garage.selectedVehicleDef();
+    const auto &ups = garage.upgrades();
 
-    // Reset drift state
+    // Tuned speeds for authentic ~2.5-3.5 min long-map traversal
+    double speedScale = 0.82;
+    this->maxSpeed = v1.maxSpeed * speedScale;
+    this->accel = v1.accel * 0.90;
+    this->brakeDecel = 250.0;
+    this->turnRate = v1.turnRate;
+    this->driftFactor = v1.driftFactor;
+    this->weight = v1.weight;
+    this->armorRating = v1.armorRating;
+    this->offroadGripBonus = ups.suspensionLevel * 0.08;
+    this->nitrousMaxFuel = 100.0 + ups.nitrousLevel * 15.0;
+
     isDrifting = false;
     driftTimer = 0.0;
     miniTurboTimer = 0.0;
-    driftHopTimer = 0.0;
-    driftHopHeight = 0.0;
     lateralSlipAngle = 0.0;
     driftDirection = 0;
+    bodyRoll = 0.0;
     driftSparks.clear();
+    worldParticles.clear();
 
-    player1.id = 0;
-    player1.isHuman = true;
-    player1.characterId = p1.id;
-    player1.name = p1.name;
-    player1.kartColor = p1.primaryColor;
-    player1.maxSpeed = p1.maxSpeed;
-    player1.accel = p1.accel;
-    player1.brakeDecel = 240.0;
-    player1.turnRate = p1.turnRate;
-    player1.driftFactor = p1.driftFactor;
-    player1.weight = p1.weight;
-    player1.isDrifting = false;
-    player1.driftTimer = 0.0;
-    player1.miniTurboTimer = 0.0;
-    player1.driftHopTimer = 0.0;
-    player1.lateralSlip = 0.0;
-    player1.driftDirection = 0;
+    double startX = 350.0, startZ = 3800.0, startAngle = 0.0;
+    if (currentWaypoints.size() >= 2) {
+        startX = currentWaypoints[0].x();
+        startZ = currentWaypoints[0].y();
+        startAngle = std::atan2(currentWaypoints[1].y() - startZ,
+                                currentWaypoints[1].x() - startX);
+    }
 
-    double baseZ = (currentLevel == TrackLevel::BOWSER_CASTLE) ? 250.0 : 200.0;
-    kartX = 470.0;
-    kartZ = baseZ - 6.0;
-    kartAngle = 0.0;
+    switch (currentStage) {
+    case KolkataStage::GARIAHAT_COLLAPSE:  evacTimerMax = 180.0; collapseWaveSpeed = 0.0020; break;
+    case KolkataStage::PARK_STREET_RUINS:  evacTimerMax = 210.0; collapseWaveSpeed = 0.0023; break;
+    case KolkataStage::HOWRAH_BRIDGE:      evacTimerMax = 240.0; collapseWaveSpeed = 0.0026; break;
+    }
+
+    if (resumeFromCheckpoint && activeCheckpointSave.valid) {
+        kartX = activeCheckpointSave.x;
+        kartZ = activeCheckpointSave.z;
+        kartAngle = activeCheckpointSave.angle;
+        lastCheckpointReached = activeCheckpointSave.checkpointIdx;
+        nextCheckpoint = lastCheckpointReached + 1;
+        playerHull = HullState();
+        playerHull.integrity = std::max(35.0, activeCheckpointSave.hullIntegrity);
+        playerHull.updateCrackLevel();
+        evacTimer = std::max(45.0, activeCheckpointSave.evacTimer);
+        nitrousFuel = std::max(40.0, activeCheckpointSave.nitrousFuel);
+        collapseWaveProgress = activeCheckpointSave.collapseWaveProgress;
+        raceElapsedTime = activeCheckpointSave.cumulativeTime;
+        scrapCollectedThisRun = activeCheckpointSave.scrapThisRun;
+    } else {
+        kartX = startX;
+        kartZ = startZ;
+        kartAngle = startAngle;
+        lastCheckpointReached = 0;
+        nextCheckpoint = 1;
+        playerHull = garage.currentHull();
+        if (playerHull.isWrecked() || playerHull.integrity < 30.0) {
+            playerHull = HullState();
+        }
+        playerHull.isOnFire = false;
+        playerHull.fireTimer = 0.0;
+        playerHull.overheatTimer = 0.0;
+        playerHull.updateCrackLevel();
+        evacTimer = evacTimerMax;
+        collapseWaveProgress = -0.08;
+        nitrousFuel = nitrousMaxFuel * 0.65;
+        if (currentStage == KolkataStage::GARIAHAT_COLLAPSE) {
+            raceElapsedTime = 0.0;
+            scrapCollectedThisRun = 0;
+        }
+        saveCheckpointSnapshot(0);
+    }
+
+    lastSafeX = kartX;
+    lastSafeZ = kartZ;
+    lastSafeAngle = kartAngle;
     kartSpeed = 0.0;
     steeringVisualAngle = 0.0;
+    splineProgress = computeSplineProgress(kartX, kartZ, &progressMeters);
+    playerPlacement = 1;
     currentLap = 1;
-    nextCheckpoint = 1;
     hasPassedHalfway = false;
-    firstStartCrossed = false;
+    firstStartCrossed = true;
 
+    player1 = KartEntity();
+    player1.id = 0;
+    player1.isHuman = true;
+    player1.vehicleId = v1.id;
+    player1.characterId = v1.id;
+    player1.name = v1.name;
+    player1.kartColor = v1.primaryColor;
+    player1.maxSpeed = this->maxSpeed;
+    player1.accel = this->accel;
+    player1.turnRate = v1.turnRate;
+    player1.driftFactor = v1.driftFactor;
+    player1.weight = v1.weight;
+    player1.armorRating = v1.armorRating;
     player1.x = kartX;
     player1.z = kartZ;
     player1.angle = kartAngle;
-    player1.speed = kartSpeed;
-    player1.currentLap = 1;
-    player1.nextCheckpoint = 1;
-    player1.hasPassedHalfway = false;
-    player1.firstStartCrossed = false;
-    player1.raceFinished = false;
-    player1.totalRaceDistance = 0.0;
+    player1.hull = playerHull;
 
-    if (selectedGameMode == GameMode::MULTIPLAYER) {
-        const CharacterDef &p2 = getSelectedCharacterP2();
-        player2.id = 1;
-        player2.isHuman = true;
-        player2.isAI = false;
-        player2.characterId = p2.id;
-        player2.name = p2.name;
-        player2.kartColor = (selectedCharP1 == selectedCharP2) ? p2.altColor : p2.primaryColor;
-        player2.maxSpeed = p2.maxSpeed;
-        player2.accel = p2.accel;
-        player2.brakeDecel = 240.0;
-        player2.friction = 45.0;
-        player2.turnRate = p2.turnRate;
-        player2.driftFactor = p2.driftFactor;
-        player2.weight = p2.weight;
-        player2.x = 470.0 - 18.0;
-        player2.z = baseZ + 6.0;
-        player2.angle = 0.0;
-        player2.speed = 0.0;
-        player2.currentLap = 1;
-        player2.nextCheckpoint = 1;
-        player2.hasPassedHalfway = false;
-        player2.firstStartCrossed = false;
-        player2.raceFinished = false;
-        player2.totalRaceDistance = 0.0;
-    }
+    didSurviveRun = true;
+    finishReason = "";
+    damageFlashTimer = 0.0;
+    hitRippleTimer = 0.0;
+    lightningFlashTimer = 0.0;
+    checkpointPromptTimer = 0.0;
+    nitrousActive = false;
+    nitrousBoostTimer = 0.0;
+    dozerRamTimer = 0.0;
+    cameraShakeX = 0.0;
+    cameraShakeY = 0.0;
+    horizonPitchOffset = 0.0;
+    wipeTransitionTimer = 0.45;
 
+    // Spawn AI Survivor Rivals near player start/resume
     aiOpponents.clear();
-    if (selectedGameMode == GameMode::PLAY_VS_AI) {
+    if (selectedGameMode == GameMode::RANKED_ESCAPE) {
+        double fwdX = std::cos(kartAngle);
+        double fwdZ = std::sin(kartAngle);
+        double rightX = -fwdZ;
+        double rightZ = fwdX;
+        int startWp = 1;
+        if (resumeFromCheckpoint && !currentWaypoints.empty()) {
+            startWp = std::min(static_cast<int>(currentWaypoints.size()) - 1,
+                               static_cast<int>(splineProgress * currentWaypoints.size()) + 1);
+        }
+
         int aiSlot = 1;
-        for (int i = 0; i < 4; ++i) {
-            if (i == selectedCharP1) continue;
-            const CharacterDef &aiDef = characters[i];
+        for (int i = 0; i < static_cast<int>(vehicles.size()); ++i) {
+            if (i == selectedVehicleP1) continue;
+            const VehicleDef &aiDef = vehicles[i];
             KartEntity aiKart;
             aiKart.id = aiSlot;
             aiKart.isHuman = false;
             aiKart.isAI = true;
+            aiKart.vehicleId = aiDef.id;
             aiKart.characterId = aiDef.id;
             aiKart.name = aiDef.name;
             aiKart.kartColor = aiDef.primaryColor;
-            aiKart.maxSpeed = aiDef.maxSpeed;
-            aiKart.accel = aiDef.accel;
+            aiKart.maxSpeed = aiDef.maxSpeed * speedScale;
+            aiKart.accel = aiDef.accel * 0.90;
             aiKart.brakeDecel = 240.0;
             aiKart.friction = 45.0;
             aiKart.turnRate = aiDef.turnRate;
             aiKart.driftFactor = aiDef.driftFactor;
             aiKart.weight = aiDef.weight;
-            aiKart.x = 470.0 - aiSlot * 18.0;
-            aiKart.z = baseZ + ((aiSlot % 2 == 0) ? -6.0 : +6.0);
-            aiKart.angle = 0.0;
+            aiKart.armorRating = aiDef.armorRating;
+            aiKart.x = kartX + fwdX * (-14.0 * aiSlot) + rightX * ((aiSlot % 2 == 0) ? -12.0 : 12.0);
+            aiKart.z = kartZ + fwdZ * (-14.0 * aiSlot) + rightZ * ((aiSlot % 2 == 0) ? -12.0 : 12.0);
+            aiKart.angle = kartAngle;
             aiKart.speed = 0.0;
-            aiKart.currentWaypoint = 0;
-            aiKart.currentWaypointIndex = 0;
-            aiKart.lookaheadDist = 50.0;
-            aiKart.currentLap = 1;
+            aiKart.currentWaypoint = startWp;
+            aiKart.currentWaypointIndex = startWp;
             aiKart.placement = aiSlot + 1;
-            aiKart.totalRaceDistance = 0.0;
-            aiKart.isSpinning = false;
-            aiKart.spinTimer = 0.0;
-            aiKart.isInked = false;
-            aiKart.inkTimer = 0.0;
-            aiKart.hasPassedHalfway = false;
-            aiKart.firstStartCrossed = false;
-            aiKart.raceFinished = false;
+            aiKart.hull = HullState();
             aiOpponents.push_back(aiKart);
             aiSlot++;
             if (aiSlot >= 4) break;
         }
     }
 
-    heldItem = PlayerItem::NONE;
-    isRouletteActive = false;
-    rouletteTimer = 0.0;
+    heldGear = SurvivalGear::NONE;
     mushroomBoostTimer = 0.0;
     isSpinning = false;
     spinTimer = 0.0;
     inkTimer = 0.0;
-
     isCelebrationActive = false;
     isRaceFinished = false;
     celebrationTimer = 0.0;
     flashIntensity = 0.0;
-    confetti.clear();
-
     activeProjectiles.clear();
+    initAshParticles();
 
+    currentDistrictName = determineDistrictName();
     currentState = GameState::RACING;
     pressedKeys.clear();
+
+    QString stageTitle = (currentStage == KolkataStage::GARIAHAT_COLLAPSE) ? "SECTOR 1: GARIAHAT RUINS" :
+                         (currentStage == KolkataStage::PARK_STREET_RUINS) ? "SECTOR 2: PARK ST & MAIDAN" :
+                                                                             "SECTOR 3: HOWRAH BRIDGE";
+    QString diffStr = (currentStage == KolkataStage::GARIAHAT_COLLAPSE) ? "MEDIUM • REACH AJC BOSE RAMP" :
+                      (currentStage == KolkataStage::PARK_STREET_RUINS) ? "HARD • REACH PRINSEP GHAT" :
+                                                                          "INSANE • CROSS THE CANTILEVER";
+    triggerCelebration(stageTitle, diffStr);
     update();
 }
 
 void GameCanvas::resetKart()
 {
-    if (currentState == GameState::RACING || currentState == GameState::RACE_FINISHED) {
-        startRace();
-    } else {
-        if (currentLevel == TrackLevel::BOWSER_CASTLE) {
-            kartX = 470.0;
-            kartZ = 250.0;
-        } else {
-            kartX = 470.0;
-            kartZ = 200.0;
-        }
-        kartAngle = 0.0;
-        kartSpeed = 0.0;
-        steeringVisualAngle = 0.0;
-        currentLap = 1;
-        nextCheckpoint = 1;
-        heldItem = PlayerItem::NONE;
-        isRouletteActive = false;
-        rouletteTimer = 0.0;
-        mushroomBoostTimer = 0.0;
-        isSpinning = false;
-        spinTimer = 0.0;
-        inkTimer = 0.0;
-        isCelebrationActive = false;
-        isRaceFinished = false;
-        celebrationTimer = 0.0;
-        flashIntensity = 0.0;
-        hasPassedHalfway = false;
-        firstStartCrossed = false;
-        confetti.clear();
+    if (currentState == GameState::RACING || currentState == GameState::RACE_FINISHED || currentState == GameState::CHECKPOINT_PIT) {
+        startRace(activeCheckpointSave.valid);
     }
 }
 
-void GameCanvas::mousePressEvent(QMouseEvent *event)
+void GameCanvas::saveCheckpointSnapshot(int cpIdx)
 {
-    setFocus();
-    QWidget::mousePressEvent(event);
+    activeCheckpointSave.valid = true;
+    activeCheckpointSave.stage = currentStage;
+    activeCheckpointSave.checkpointIdx = cpIdx;
+    activeCheckpointSave.x = kartX;
+    activeCheckpointSave.z = kartZ;
+    activeCheckpointSave.angle = kartAngle;
+    activeCheckpointSave.hullIntegrity = std::max(35.0, playerHull.integrity);
+    activeCheckpointSave.evacTimer = evacTimer;
+    activeCheckpointSave.nitrousFuel = nitrousFuel;
+    activeCheckpointSave.collapseWaveProgress = collapseWaveProgress;
+    activeCheckpointSave.cumulativeTime = raceElapsedTime;
+    activeCheckpointSave.scrapThisRun = scrapCollectedThisRun;
 }
 
-void GameCanvas::focusInEvent(QFocusEvent *event)
+void GameCanvas::enterCheckpointPit(int cpIdx, bool stageTransition)
 {
-    QWidget::focusInEvent(event);
-}
-
-void GameCanvas::focusOutEvent(QFocusEvent *event)
-{
+    pitIsStageTransition = stageTransition;
+    pitCheckpointIndex = cpIdx;
+    pitLocalReady = false;
+    pitFocusRow = 0;
+    pitStatusMsg.clear();
+    pitStatusTimer = 0.0;
     pressedKeys.clear();
-    QWidget::focusOutEvent(event);
+    wipeTransitionTimer = 0.35;
+    currentState = GameState::CHECKPOINT_PIT;
+
+    if (isNetworkRace && networkManager) {
+        networkManager->sendCheckpointReady(cpIdx, false);
+    }
 }
+
+void GameCanvas::rolloutFromCheckpointPit()
+{
+    // Re-bake upgraded stats immediately!
+    VehicleDef v1 = GarageSystem::instance().selectedVehicleDef();
+    const auto &ups = GarageSystem::instance().upgrades();
+    this->maxSpeed = v1.maxSpeed * 0.82;
+    this->accel = v1.accel * 0.90;
+    this->turnRate = v1.turnRate;
+    this->armorRating = v1.armorRating;
+    this->offroadGripBonus = ups.suspensionLevel * 0.08;
+    this->nitrousMaxFuel = 100.0 + ups.nitrousLevel * 15.0;
+
+    wipeTransitionTimer = 0.35;
+    pressedKeys.clear();
+
+    if (pitIsStageTransition) {
+        if (currentStage == KolkataStage::GARIAHAT_COLLAPSE) {
+            currentStage = KolkataStage::PARK_STREET_RUINS;
+        } else if (currentStage == KolkataStage::PARK_STREET_RUINS) {
+            currentStage = KolkataStage::HOWRAH_BRIDGE;
+        }
+        activeCheckpointSave.valid = false;
+        GarageSystem::instance().currentHull() = playerHull;
+        if (isNetworkRace) {
+            startMultiplayerRace(static_cast<int>(currentStage));
+        } else {
+            startRace(false);
+        }
+    } else {
+        saveCheckpointSnapshot(pitCheckpointIndex);
+        currentState = GameState::RACING;
+        triggerCelebration("ROLLING OUT!", "NEXT SECTOR AHEAD");
+    }
+}
+
+// -------------------------------------------------------------
+// INPUT HANDLING
+// -------------------------------------------------------------
+
+void GameCanvas::mousePressEvent(QMouseEvent *event) { setFocus(); QWidget::mousePressEvent(event); }
+void GameCanvas::focusInEvent(QFocusEvent *event) { QWidget::focusInEvent(event); }
+void GameCanvas::focusOutEvent(QFocusEvent *event) { pressedKeys.clear(); QWidget::focusOutEvent(event); }
 
 void GameCanvas::keyPressEvent(QKeyEvent *event)
 {
-    int key = event->key();
+    pressedKeys.insert(event->key());
 
     switch (currentState) {
+    case GameState::STORY_INTRO:
+        handleStoryIntroInput(event->key());
+        break;
     case GameState::TITLE_MENU:
-        handleTitleMenuInput(key);
+        handleTitleMenuInput(event->key());
         break;
-
-    case GameState::CHARACTER_SELECT:
-        handleCharacterSelectInput(key);
+    case GameState::GARAGE:
+        handleGarageInput(event->key());
         break;
-
-    case GameState::MULTIPLAYER_LOBBY:
-        handleMultiplayerLobbyInput(event);
-        break;
-
     case GameState::RACING:
     case GameState::RACE_FINISHED:
-        handleRacingInput(key);
+        handleRacingInput(event->key());
+        break;
+    case GameState::CHECKPOINT_PIT:
+        handleCheckpointPitInput(event->key());
+        break;
+    case GameState::MULTIPLAYER_LOBBY:
+        handleMultiplayerLobbyInput(event);
         break;
     }
 }
@@ -390,591 +503,536 @@ void GameCanvas::keyReleaseEvent(QKeyEvent *event)
     pressedKeys.erase(event->key());
 }
 
+void GameCanvas::handleStoryIntroInput(int key)
+{
+    if (key == Qt::Key_Space || key == Qt::Key_Return || key == Qt::Key_Enter || key == Qt::Key_Escape) {
+        wipeTransitionTimer = 0.45;
+        currentState = GameState::TITLE_MENU;
+        update();
+    }
+}
+
 void GameCanvas::handleTitleMenuInput(int key)
 {
-    if (key == Qt::Key_Up || key == Qt::Key_W) {
+    if (key == Qt::Key_W || key == Qt::Key_Up) {
         menuIndex = (menuIndex - 1 + 3) % 3;
-        update();
-    } else if (key == Qt::Key_Down || key == Qt::Key_S) {
+    } else if (key == Qt::Key_S || key == Qt::Key_Down) {
         menuIndex = (menuIndex + 1) % 3;
-        update();
-    } else if (key == Qt::Key_1) {
-        menuIndex = 0;
-        confirmTitleMenuSelection();
-    } else if (key == Qt::Key_2) {
-        menuIndex = 1;
-        confirmTitleMenuSelection();
-    } else if (key == Qt::Key_3) {
-        menuIndex = 2;
-        confirmTitleMenuSelection();
     } else if (key == Qt::Key_Return || key == Qt::Key_Enter || key == Qt::Key_Space) {
         confirmTitleMenuSelection();
+    } else if (key == Qt::Key_1) {
+        menuIndex = 0; confirmTitleMenuSelection();
+    } else if (key == Qt::Key_2) {
+        menuIndex = 1; confirmTitleMenuSelection();
+    } else if (key == Qt::Key_3) {
+        menuIndex = 2; confirmTitleMenuSelection();
+    } else if (key == Qt::Key_C) {
+        storyTimer = 0.0;
+        wipeTransitionTimer = 0.4;
+        currentState = GameState::STORY_INTRO;
     }
 }
 
 void GameCanvas::confirmTitleMenuSelection()
 {
-    if (menuIndex == 0) {
-        selectedGameMode = GameMode::PLAY_VS_AI;
-        charSelectPhase = 0;
-        setGameState(GameState::CHARACTER_SELECT);
-    } else if (menuIndex == 1) {
+    wipeTransitionTimer = 0.35;
+    switch (menuIndex) {
+    case 0:
+        selectedGameMode = GameMode::RANKED_ESCAPE;
+        currentStage = KolkataStage::GARIAHAT_COLLAPSE;
+        activeCheckpointSave.valid = false;
+        currentState = GameState::GARAGE;
+        break;
+    case 1:
         selectedGameMode = GameMode::MULTIPLAYER;
-        initNetworkManager();
+        currentState = GameState::MULTIPLAYER_LOBBY;
         multiLobbyState = MultiLobbyState::MODE_CHOICE;
-        setGameState(GameState::MULTIPLAYER_LOBBY);
-    } else {
-        selectedGameMode = GameMode::PRACTICE;
-        charSelectPhase = 0;
-        setGameState(GameState::CHARACTER_SELECT);
+        break;
+    case 2:
+        selectedGameMode = GameMode::TIME_TRIAL;
+        activeCheckpointSave.valid = false;
+        currentState = GameState::GARAGE;
+        break;
     }
+    update();
 }
 
-void GameCanvas::handleCharacterSelectInput(int key)
+void GameCanvas::handleGarageInput(int key)
 {
-    if (key == Qt::Key_Escape || key == Qt::Key_Backspace) {
-        if (selectedGameMode == GameMode::MULTIPLAYER && charSelectPhase == 1) {
-            charSelectPhase = 0;
-            update();
-        } else {
-            setGameState(GameState::TITLE_MENU);
+    auto &garage = GarageSystem::instance();
+    if (key == Qt::Key_A || key == Qt::Key_Left) {
+        selectedVehicleP1 = (selectedVehicleP1 - 1 + 4) % 4;
+        garage.selectVehicle(selectedVehicleP1);
+    } else if (key == Qt::Key_D || key == Qt::Key_Right) {
+        selectedVehicleP1 = (selectedVehicleP1 + 1) % 4;
+        garage.selectVehicle(selectedVehicleP1);
+    } else if (key == Qt::Key_W || key == Qt::Key_Up) {
+        garageUpgradeRow = (garageUpgradeRow - 1 + 5) % 5;
+    } else if (key == Qt::Key_S || key == Qt::Key_Down) {
+        garageUpgradeRow = (garageUpgradeRow + 1) % 5;
+    } else if (key == Qt::Key_U || key == Qt::Key_B) {
+        bool ok = false;
+        QString label;
+        if (garageUpgradeRow == 0)      { ok = garage.upgradeArmor();      label = "ARMOR PLATING"; }
+        else if (garageUpgradeRow == 1) { ok = garage.upgradeEngine();     label = "ENGINE / TURBO"; }
+        else if (garageUpgradeRow == 2) { ok = garage.upgradeSuspension(); label = "SUSPENSION"; }
+        else if (garageUpgradeRow == 3) { ok = garage.upgradeNitrous();    label = "NITROUS TANK"; }
+        else if (garageUpgradeRow == 4) {
+            int missing = static_cast<int>(std::ceil(100.0 - garage.currentHull().integrity));
+            ok = (missing > 0) && garage.fieldRepair(missing);
+            label = "CHASSIS REPAIR";
         }
-        return;
-    }
-
-    if (key == Qt::Key_1) {
-        setTrackLevel(TrackLevel::DONUT_PLAINS);
-        return;
+        garageStatusMsg = ok ? (label + " APPLIED!") : "INSUFFICIENT SCRAP OR MAXED!";
+        garageMsgTimer = 1.8;
+    } else if (key == Qt::Key_1) {
+        currentStage = KolkataStage::GARIAHAT_COLLAPSE;
+        activeCheckpointSave.valid = false;
     } else if (key == Qt::Key_2) {
-        setTrackLevel(TrackLevel::CHOCO_VALLEY);
-        return;
+        currentStage = KolkataStage::PARK_STREET_RUINS;
+        activeCheckpointSave.valid = false;
     } else if (key == Qt::Key_3) {
-        setTrackLevel(TrackLevel::BOWSER_CASTLE);
-        return;
+        currentStage = KolkataStage::HOWRAH_BRIDGE;
+        activeCheckpointSave.valid = false;
+    } else if (key == Qt::Key_Return || key == Qt::Key_Enter || key == Qt::Key_Space) {
+        startRace(false);
+    } else if (key == Qt::Key_Escape) {
+        currentState = GameState::TITLE_MENU;
     }
-
-    if (selectedGameMode == GameMode::MULTIPLAYER) {
-        if (charSelectPhase == 0) {
-            if (key == Qt::Key_Left || key == Qt::Key_A) {
-                selectedCharP1 = (selectedCharP1 - 1 + 4) % 4;
-                update();
-            } else if (key == Qt::Key_Right || key == Qt::Key_D) {
-                selectedCharP1 = (selectedCharP1 + 1) % 4;
-                update();
-            } else if (key == Qt::Key_Return || key == Qt::Key_Enter || key == Qt::Key_Space) {
-                charSelectPhase = 1;
-                if (selectedCharP2 == selectedCharP1) {
-                    selectedCharP2 = (selectedCharP1 + 1) % 4;
-                }
-                update();
-            }
-        } else {
-            if (key == Qt::Key_Left || key == Qt::Key_A) {
-                selectedCharP2 = (selectedCharP2 - 1 + 4) % 4;
-                update();
-            } else if (key == Qt::Key_Right || key == Qt::Key_D) {
-                selectedCharP2 = (selectedCharP2 + 1) % 4;
-                update();
-            } else if (key == Qt::Key_Return || key == Qt::Key_Enter || key == Qt::Key_Space) {
-                startRace();
-            }
-        }
-    } else {
-        if (key == Qt::Key_Left || key == Qt::Key_A) {
-            selectedCharP1 = (selectedCharP1 - 1 + 4) % 4;
-            update();
-        } else if (key == Qt::Key_Right || key == Qt::Key_D) {
-            selectedCharP1 = (selectedCharP1 + 1) % 4;
-            update();
-        } else if (key == Qt::Key_Return || key == Qt::Key_Enter || key == Qt::Key_Space) {
-            startRace();
-        }
-    }
+    update();
 }
 
 void GameCanvas::handleRacingInput(int key)
 {
-    if (currentState == GameState::RACE_FINISHED) {
-        if (isNetworkRace) {
-            if (key == Qt::Key_R && networkManager && networkManager->isHost()) {
-                networkManager->returnToLobby();
-                return;
-            } else if (key == Qt::Key_Escape) {
-                if (networkManager) networkManager->disconnectNetwork();
-                isNetworkRace = false;
-                setGameState(GameState::TITLE_MENU);
-                return;
-            }
-            return;
+    if (key == Qt::Key_R) {
+        if (pressedKeys.count(Qt::Key_Shift) > 0) {
+            activeCheckpointSave.valid = false;
+            GarageSystem::instance().currentHull() = HullState();
+            startRace(false);
+        } else {
+            resetKart(); // Resumes from saved checkpoint if available
         }
-
-        if (key == Qt::Key_Return || key == Qt::Key_Enter || key == Qt::Key_Space || key == Qt::Key_Escape) {
-            setGameState(GameState::TITLE_MENU);
-            return;
-        } else if (key == Qt::Key_R) {
-            startRace();
-            return;
+    } else if (key == Qt::Key_P) {
+        if (!isRaceFinished && (checkpointPromptTimer > 0.0 || lastCheckpointReached > 0)) {
+            enterCheckpointPit(lastCheckpointReached, false);
         }
+    } else if (key == Qt::Key_Space) {
+        if (nitrousFuel > 8.0) nitrousActive = true;
+    } else if (key == Qt::Key_E) {
+        if (heldGear != SurvivalGear::NONE) useHeldGear();
+    } else if (key == Qt::Key_Escape || key == Qt::Key_Return || key == Qt::Key_Enter) {
+        if (isRaceFinished) currentState = GameState::GARAGE;
     }
+}
 
-    if (key == Qt::Key_Escape) {
-        setGameState(GameState::TITLE_MENU);
-        return;
-    }
-
-    pressedKeys.insert(key);
-
-    if (key == Qt::Key_Space) {
-        useHeldItem();
-    } else if (key == Qt::Key_R) {
-        startRace();
-    } else if (key == Qt::Key_F) {
-        triggerCelebration("★ FINISH! ★", "COURSE CLEAR!");
+void GameCanvas::handleCheckpointPitInput(int key)
+{
+    auto &garage = GarageSystem::instance();
+    if (key == Qt::Key_W || key == Qt::Key_Up) {
+        pitFocusRow = (pitFocusRow - 1 + 6) % 6;
+    } else if (key == Qt::Key_S || key == Qt::Key_Down) {
+        pitFocusRow = (pitFocusRow + 1) % 6;
     } else if (key == Qt::Key_1) {
-        setTrackLevel(TrackLevel::DONUT_PLAINS);
+        pitFocusRow = 0;
     } else if (key == Qt::Key_2) {
-        setTrackLevel(TrackLevel::CHOCO_VALLEY);
+        pitFocusRow = 1;
     } else if (key == Qt::Key_3) {
-        setTrackLevel(TrackLevel::BOWSER_CASTLE);
+        pitFocusRow = 2;
+    } else if (key == Qt::Key_4) {
+        pitFocusRow = 3;
+    } else if (key == Qt::Key_5) {
+        pitFocusRow = 4;
+    } else if (key == Qt::Key_6) {
+        pitFocusRow = 5;
+    }
+
+    if (key == Qt::Key_U || key == Qt::Key_B || (key >= Qt::Key_1 && key <= Qt::Key_6)) {
+        bool ok = false;
+        if (pitFocusRow == 0) {
+            // Field Hull Repair (+40% for 50 Scrap)
+            int missing = static_cast<int>(std::ceil(100.0 - playerHull.integrity));
+            int cost = std::min(60, std::max(25, missing));
+            if (missing > 0 && garage.fieldRepair(cost)) {
+                playerHull.repair(45.0);
+                playerHull.isOnFire = false;
+                ok = true;
+            }
+            pitStatusMsg = ok ? "FIELD WELD COMPLETE (+45% HULL)" : "NEED SCRAP OR HULL FULL";
+        } else if (pitFocusRow == 1) {
+            if (nitrousFuel < nitrousMaxFuel && garage.fieldRepair(30)) {
+                nitrousFuel = nitrousMaxFuel;
+                ok = true;
+            }
+            pitStatusMsg = ok ? "NITROUS TANK TOPPED UP!" : "NEED ₹30 SCRAP OR TANK FULL";
+        } else if (pitFocusRow == 2) {
+            ok = garage.upgradeArmor();
+            pitStatusMsg = ok ? "ARMOR UPGRADED!" : "NEED SCRAP / MAXED";
+        } else if (pitFocusRow == 3) {
+            ok = garage.upgradeEngine();
+            pitStatusMsg = ok ? "ENGINE UPGRADED!" : "NEED SCRAP / MAXED";
+        } else if (pitFocusRow == 4) {
+            ok = garage.upgradeSuspension();
+            pitStatusMsg = ok ? "SUSPENSION UPGRADED!" : "NEED SCRAP / MAXED";
+        } else if (pitFocusRow == 5) {
+            ok = garage.upgradeNitrous();
+            pitStatusMsg = ok ? "NITROUS TANK UPGRADED!" : "NEED SCRAP / MAXED";
+        }
+        pitStatusTimer = 1.6;
+    } else if (key == Qt::Key_Space || key == Qt::Key_Return || key == Qt::Key_Enter) {
+        if (isNetworkRace && networkManager) {
+            pitLocalReady = !pitLocalReady;
+            networkManager->sendCheckpointReady(pitCheckpointIndex, pitLocalReady);
+        } else {
+            rolloutFromCheckpointPit();
+        }
     }
 }
 
-void GameCanvas::extractDonutPlainsWaypoints()
-{
-    std::vector<QPointF> &wps = trackWaypoints[static_cast<int>(TrackLevel::DONUT_PLAINS)];
-    wps = {
-        QPointF(512.0, 200.0),
-        QPointF(622.9, 225.8),
-        QPointF(702.1, 293.8),
-        QPointF(749.7, 389.8),
-        QPointF(765.5, 500.0),
-        QPointF(749.7, 610.2),
-        QPointF(702.1, 706.2),
-        QPointF(622.9, 774.2),
-        QPointF(512.0, 800.0),
-        QPointF(403.1, 774.2),
-        QPointF(325.2, 706.2),
-        QPointF(278.6, 610.2),
-        QPointF(263.0, 500.0),
-        QPointF(278.6, 389.8),
-        QPointF(325.2, 293.8),
-        QPointF(403.1, 225.8)
-    };
-}
-
-void GameCanvas::extractChocoValleyWaypoints()
-{
-    std::vector<QPointF> &wps = trackWaypoints[static_cast<int>(TrackLevel::CHOCO_VALLEY)];
-    wps = {
-        QPointF(512.0, 200.0),
-        QPointF(684.2, 241.0),
-        QPointF(770.4, 321.3),
-        QPointF(787.3, 413.1),
-        QPointF(751.6, 488.6),
-        QPointF(680.0, 520.0),
-        QPointF(621.1, 551.2),
-        QPointF(590.0, 625.6),
-        QPointF(571.7, 714.4),
-        QPointF(550.8, 788.8),
-        QPointF(512.0, 820.0),
-        QPointF(369.3, 783.6),
-        QPointF(296.2, 692.0),
-        QPointF(263.2, 571.6),
-        QPointF(240.9, 448.8),
-        QPointF(200.0, 350.0),
-        QPointF(186.2, 284.5),
-        QPointF(228.6, 241.0),
-        QPointF(309.2, 215.4),
-        QPointF(409.7, 203.1)
-    };
-}
-
-void GameCanvas::extractBowserCastleWaypoints()
-{
-    std::vector<QPointF> &wps = trackWaypoints[static_cast<int>(TrackLevel::BOWSER_CASTLE)];
-    wps = {
-        QPointF(512.0, 250.0),
-        QPointF(600.3, 250.0),
-        QPointF(688.7, 250.0),
-        QPointF(777.0, 250.0),
-        QPointF(780.0, 335.3),
-        QPointF(780.0, 423.7),
-        QPointF(780.0, 512.0),
-        QPointF(729.7, 550.0),
-        QPointF(641.3, 550.0),
-        QPointF(553.0, 550.0),
-        QPointF(550.0, 635.3),
-        QPointF(550.0, 723.7),
-        QPointF(518.0, 780.0),
-        QPointF(429.7, 780.0),
-        QPointF(341.3, 780.0),
-        QPointF(253.0, 780.0),
-        QPointF(250.0, 694.7),
-        QPointF(250.0, 606.3),
-        QPointF(250.0, 518.0),
-        QPointF(250.0, 429.7),
-        QPointF(250.0, 341.3),
-        QPointF(250.0, 253.0),
-        QPointF(335.3, 250.0),
-        QPointF(423.7, 250.0)
-    };
-}
-
-void GameCanvas::initTrackWaypoints()
-{
-    extractDonutPlainsWaypoints();
-    extractChocoValleyWaypoints();
-    extractBowserCastleWaypoints();
-    currentTrackWaypoints = trackWaypoints[static_cast<int>(currentLevel)];
-}
-
-SpriteType GameCanvas::getKartSpriteType(int characterId, bool isAlt) const
-{
-    switch (characterId) {
-    case 0: return isAlt ? SpriteType::KART_MARIO_ALT : SpriteType::KART_MARIO;
-    case 1: return isAlt ? SpriteType::KART_BOWSER_ALT : SpriteType::KART_BOWSER;
-    case 2: return isAlt ? SpriteType::KART_PEACH_ALT : SpriteType::KART_PEACH;
-    case 3: return isAlt ? SpriteType::KART_TOAD_ALT : SpriteType::KART_TOAD;
-    default: return isAlt ? SpriteType::KART_MARIO_ALT : SpriteType::KART_MARIO;
-    }
-}
-
-void GameCanvas::initTrackMaps()
-{
-    generateDonutPlains();
-}
-
 // -------------------------------------------------------------
-// TRACK GENERATION (PROCEDURAL TEXTURES & MASKS)
-// -------------------------------------------------------------
-
-void GameCanvas::generateDonutPlains()
-{
-    trackVisualMap.fill(qRgb(34, 139, 34)); // Grass green
-    trackMaskMap.fill(qRgb(0, 255, 0));     // Green = Offroad
-
-    QPainter visPainter(&trackVisualMap);
-    QPainter maskPainter(&trackMaskMap);
-
-    visPainter.setRenderHint(QPainter::Antialiasing, true);
-    maskPainter.setRenderHint(QPainter::Antialiasing, true);
-
-    // Track path (Smooth oval loop)
-    QPainterPath path;
-    path.moveTo(512, 200);
-    path.cubicTo(850, 200, 850, 800, 512, 800);
-    path.cubicTo(180, 800, 180, 200, 512, 200);
-
-    // Draw Curbs (Red-white outer border)
-    QPen curbPen(QColor(220, 20, 60), 100);
-    visPainter.setPen(curbPen);
-    visPainter.drawPath(path);
-
-    // Draw Asphalt Road
-    QPen roadPen(QColor(60, 64, 68), 84);
-    visPainter.setPen(roadPen);
-    visPainter.drawPath(path);
-
-    // Draw Mask Road (White = 100% speed)
-    QPen maskRoadPen(QColor(255, 255, 255), 84);
-    maskPainter.setPen(maskRoadPen);
-    maskPainter.drawPath(path);
-
-    // Finish Line
-    visPainter.setPen(Qt::NoPen);
-    visPainter.setBrush(QColor(255, 255, 255));
-    for (int y = 158; y < 242; y += 12) {
-        visPainter.drawRect(510, y, 6, 6);
-        visPainter.drawRect(516, y + 6, 6, 6);
-    }
-
-    // Checkpoint line on mask (Yellow = Checkpoint)
-    maskPainter.setPen(QPen(QColor(255, 255, 0), 10));
-    maskPainter.drawLine(512, 158, 512, 242);
-
-    visPainter.end();
-    maskPainter.end();
-
-    // Sprites along track
-    worldSprites.clear();
-    // Item Question Boxes on straightaways
-    worldSprites.push_back({ 560.0, 200.0, 0.0, SpriteType::QUESTION_BOX, true, 0.0 });
-    worldSprites.push_back({ 620.0, 200.0, 0.0, SpriteType::QUESTION_BOX, true, 0.0 });
-    worldSprites.push_back({ 512.0, 800.0, 0.0, SpriteType::QUESTION_BOX, true, 0.0 });
-    worldSprites.push_back({ 450.0, 800.0, 0.0, SpriteType::QUESTION_BOX, true, 0.0 });
-
-    // Roadside obstacles (Green Pipes)
-    worldSprites.push_back({ 850.0, 480.0, 0.0, SpriteType::GREEN_PIPE, true, 0.0 });
-    worldSprites.push_back({ 850.0, 520.0, 0.0, SpriteType::GREEN_PIPE, true, 0.0 });
-    worldSprites.push_back({ 180.0, 480.0, 0.0, SpriteType::GREEN_PIPE, true, 0.0 });
-    worldSprites.push_back({ 180.0, 520.0, 0.0, SpriteType::GREEN_PIPE, true, 0.0 });
-
-    // Track coins
-    worldSprites.push_back({ 400.0, 200.0, 0.0, SpriteType::COIN, true, 0.0 });
-    worldSprites.push_back({ 350.0, 200.0, 0.0, SpriteType::COIN, true, 0.0 });
-    worldSprites.push_back({ 600.0, 800.0, 0.0, SpriteType::COIN, true, 0.0 });
-
-    // Hazard banana
-    worldSprites.push_back({ 780.0, 320.0, 0.0, SpriteType::BANANA_DROPPED, true, 0.0 });
-    currentTrackWaypoints = trackWaypoints[static_cast<int>(TrackLevel::DONUT_PLAINS)];
-    trackHazards.clear();
-    updateMinimapTrackCache();
-}
-
-void GameCanvas::generateChocoValley()
-{
-    trackVisualMap.fill(qRgb(194, 142, 87)); // Tan Desert Sand
-    trackMaskMap.fill(qRgb(0, 255, 0));      // Offroad sand
-
-    QPainter visPainter(&trackVisualMap);
-    QPainter maskPainter(&trackMaskMap);
-
-    visPainter.setRenderHint(QPainter::Antialiasing, true);
-    maskPainter.setRenderHint(QPainter::Antialiasing, true);
-
-    // Choco track path with sharper S-curves
-    QPainterPath path;
-    path.moveTo(512, 200);
-    path.cubicTo(880, 220, 820, 520, 680, 520);
-    path.cubicTo(550, 520, 600, 820, 512, 820);
-    path.cubicTo(200, 820, 300, 480, 200, 350);
-    path.cubicTo(120, 220, 350, 200, 512, 200);
-
-    // Darker Dirt Road
-    QPen curbPen(QColor(139, 69, 19), 74);
-    visPainter.setPen(curbPen);
-    visPainter.drawPath(path);
-
-    QPen roadPen(QColor(92, 51, 23), 60);
-    visPainter.setPen(roadPen);
-    visPainter.drawPath(path);
-
-    QPen maskRoadPen(QColor(255, 255, 255), 60);
-    maskPainter.setPen(maskRoadPen);
-    maskPainter.drawPath(path);
-
-    // Finish line
-    visPainter.setPen(Qt::NoPen);
-    visPainter.setBrush(QColor(255, 230, 180));
-    visPainter.drawRect(508, 170, 8, 60);
-
-    maskPainter.setPen(QPen(QColor(255, 255, 0), 8));
-    maskPainter.drawLine(512, 170, 512, 230);
-
-    visPainter.end();
-    maskPainter.end();
-
-    worldSprites.clear();
-    worldSprites.push_back({ 570.0, 200.0, 0.0, SpriteType::QUESTION_BOX, true, 0.0 });
-    worldSprites.push_back({ 680.0, 520.0, 0.0, SpriteType::QUESTION_BOX, true, 0.0 });
-    worldSprites.push_back({ 512.0, 820.0, 0.0, SpriteType::BANANA_DROPPED, true, 0.0 });
-    worldSprites.push_back({ 200.0, 350.0, 0.0, SpriteType::QUESTION_BOX, true, 0.0 });
-    worldSprites.push_back({ 720.0, 380.0, 0.0, SpriteType::OIL_SLICK, true, 0.0 });
-    worldSprites.push_back({ 320.0, 540.0, 0.0, SpriteType::OIL_SLICK, true, 0.0 });
-    worldSprites.push_back({ 420.0, 200.0, 0.0, SpriteType::COIN, true, 0.0 });
-    currentTrackWaypoints = trackWaypoints[static_cast<int>(TrackLevel::CHOCO_VALLEY)];
-
-    trackHazards = {
-        { 700.0, 220.0, HazardType::CHOCOLATE_FOUNTAIN, 0.0, true, 15.0 },
-        { 600.0, 580.0, HazardType::CHOCOLATE_FOUNTAIN, 0.0, true, 15.0 },
-        { 300.0, 760.0, HazardType::CHOCOLATE_FOUNTAIN, 0.0, true, 15.0 },
-        { 550.0, 180.0, HazardType::ROLLING_CANDY, 0.0, false, 14.0 },
-        { 400.0, 850.0, HazardType::ROLLING_CANDY, 1.5, false, 14.0 }
-    };
-    updateMinimapTrackCache();
-}
-
-void GameCanvas::generateBowserCastle()
-{
-    trackVisualMap.fill(qRgb(130, 20, 10)); // Molten Lava
-    trackMaskMap.fill(qRgb(255, 0, 255));   // Magenta = Lava (Hazard)
-
-    QPainter visPainter(&trackVisualMap);
-    QPainter maskPainter(&trackMaskMap);
-
-    visPainter.setRenderHint(QPainter::Antialiasing, true);
-    maskPainter.setRenderHint(QPainter::Antialiasing, true);
-
-    // Castle Stone Raceway with smoothly rounded corners
-    QPolygon castlePoly;
-    castlePoly << QPoint(250, 250)
-               << QPoint(780, 250)
-               << QPoint(780, 550)
-               << QPoint(550, 550)
-               << QPoint(550, 780)
-               << QPoint(250, 780);
-
-    // Wide Stone Curb / Shoulder (slows down safely, protects against lava)
-    QPen stoneBorder(QColor(48, 50, 58), 96, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-    visPainter.setPen(stoneBorder);
-    visPainter.drawPolygon(castlePoly);
-
-    // Mask for Curb: Green (Offroad - safe buffer zone)
-    QPen maskCurb(QColor(0, 255, 0), 96, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-    maskPainter.setPen(maskCurb);
-    maskPainter.drawPolygon(castlePoly);
-
-    // Wide Tarmac Stone Raceway (74px wide - plenty of room to overtake and avoid obstacles)
-    QPen stoneRoad(QColor(76, 78, 88), 74, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-    visPainter.setPen(stoneRoad);
-    visPainter.drawPolygon(castlePoly);
-
-    // Mask for Road: White (Full speed)
-    QPen maskRoad(QColor(255, 255, 255), 74, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-    maskPainter.setPen(maskRoad);
-    maskPainter.drawPolygon(castlePoly);
-
-    // Finish line across the wider raceway
-    visPainter.setPen(Qt::NoPen);
-    visPainter.setBrush(QColor(255, 255, 255));
-    visPainter.drawRect(510, 210, 8, 80);
-
-    maskPainter.setPen(QPen(QColor(255, 255, 0), 8));
-    maskPainter.drawLine(512, 210, 512, 290);
-
-    visPainter.end();
-    maskPainter.end();
-
-    worldSprites.clear();
-    worldSprites.push_back({ 580.0, 250.0, 0.0, SpriteType::QUESTION_BOX, true, 0.0 });
-    // Thwomp placed on the outer right lane (X=810), leaving the middle and inner lane wide open!
-    worldSprites.push_back({ 810.0, 400.0, 0.0, SpriteType::THWOMP, true, 0.0 });
-    worldSprites.push_back({ 650.0, 550.0, 0.0, SpriteType::QUESTION_BOX, true, 0.0 });
-    worldSprites.push_back({ 400.0, 780.0, 0.0, SpriteType::QUESTION_BOX, true, 0.0 });
-    // Green Pipe placed along the outer corner
-    worldSprites.push_back({ 215.0, 600.0, 0.0, SpriteType::GREEN_PIPE, true, 0.0 });
-    worldSprites.push_back({ 350.0, 250.0, 0.0, SpriteType::COIN, true, 0.0 });
-    currentTrackWaypoints = trackWaypoints[static_cast<int>(TrackLevel::BOWSER_CASTLE)];
-
-    trackHazards = {
-        { 500.0, 150.0, HazardType::LAVA_GEYSER, 0.0, false, 16.0 },
-        { 850.0, 350.0, HazardType::LAVA_GEYSER, 1.2, false, 16.0 },
-        { 650.0, 850.0, HazardType::LAVA_GEYSER, 2.4, false, 16.0 },
-        { 200.0, 650.0, HazardType::LAVA_GEYSER, 3.6, false, 16.0 }
-    };
-    updateMinimapTrackCache();
-}
-
-// -------------------------------------------------------------
-// GAME LOOP & PHYSICS
+// GAME LOOP & SIMULATION
 // -------------------------------------------------------------
 
 void GameCanvas::updateGameLoop()
 {
     double dt = frameTimer.restart() / 1000.0;
-    if (dt > 0.05) dt = 0.05; // clamp delta time for stability
+    if (dt > 0.05) dt = 0.05;
 
     globalTime += dt;
+    if (garageMsgTimer > 0.0) garageMsgTimer = std::max(0.0, garageMsgTimer - dt);
+    if (pitStatusTimer > 0.0) pitStatusTimer = std::max(0.0, pitStatusTimer - dt);
+    if (wipeTransitionTimer > 0.0) wipeTransitionTimer = std::max(0.0, wipeTransitionTimer - dt);
 
     switch (currentState) {
-    case GameState::TITLE_MENU:
-        renderTitleMenu();
-        emit statsUpdated(0.0, 0, 0.0, 0.0, 0.0, "MENU: TITLE SCREEN");
+    case GameState::STORY_INTRO:
+        storyTimer += dt;
+        if (storyTimer >= STORY_TOTAL_DURATION) {
+            wipeTransitionTimer = 0.45;
+            currentState = GameState::TITLE_MENU;
+        }
+        renderStoryIntro();
+        renderWipeTransition();
+        emit statsUpdated(0.0, 0, 0.0, 0.0, 0.0, "CUTSCENE: 02:40 IST");
         break;
 
-    case GameState::CHARACTER_SELECT:
-        renderCharacterSelect();
-        emit statsUpdated(0.0, 0, 0.0, 0.0, 0.0, "MENU: CHARACTER SELECT");
+    case GameState::TITLE_MENU:
+        renderTitleMenu();
+        renderWipeTransition();
+        emit statsUpdated(0.0, 0, 0.0, 0.0, 0.0, "MENU: KOLKATA LAST EXIT");
+        emit survivalTelemetryUpdated(100.0, 0.0, 1, 1, 0, GarageSystem::instance().getScrapBalance(), "STANDBY");
+        break;
+
+    case GameState::GARAGE:
+        renderGarageScreen();
+        renderWipeTransition();
+        emit statsUpdated(0.0, 0, 0.0, 0.0, 0.0, "GARAGE: RIG & UPGRADES");
+        emit survivalTelemetryUpdated(GarageSystem::instance().currentHull().integrity, 0.0, 1, 1, 0,
+                                      GarageSystem::instance().getScrapBalance(), "GARAGE BAY");
         break;
 
     case GameState::MULTIPLAYER_LOBBY:
         renderMultiplayerLobby();
-        emit statsUpdated(0.0, 0, 0.0, 0.0, 0.0, "MENU: LAN MULTIPLAYER");
+        emit statsUpdated(0.0, 0, 0.0, 0.0, 0.0, "LAN ESCAPE LOBBY");
+        break;
+
+    case GameState::CHECKPOINT_PIT:
+        updateAshParticles(dt);
+        renderSky();
+        renderGroundMode7();
+        renderSprites();
+        renderAshOverlay();
+        renderCockpit();
+        renderWindshieldCracks();
+        renderCheckpointPitOverlay();
+        renderWipeTransition();
         break;
 
     case GameState::RACING:
+        raceElapsedTime += dt;
+        if (checkpointPromptTimer > 0.0) checkpointPromptTimer = std::max(0.0, checkpointPromptTimer - dt);
+
         updatePhysics(dt);
+        hazardSystem.updateCollapsing(dt, kartX, kartZ);
+        hazardSystem.updateHazards(dt);
+        hazardSystem.updateSeismic(dt);
+        applyCraterStamps();
+
+        if (selectedGameMode != GameMode::TIME_TRIAL) {
+            updateEvacTimer(dt);
+            updateCollapseWave(dt);
+        }
+
         if (isNetworkRace) {
             updateRemoteKarts(dt);
-            raceElapsedTime += dt;
             networkSyncTimer += dt;
             if (networkSyncTimer >= 0.033 && networkManager) {
                 networkSyncTimer = 0.0;
                 networkManager->broadcastLocalKartState(
-                    kartX, kartZ, kartAngle, kartSpeed, currentLap,
+                    kartX, kartZ, kartAngle, kartSpeed, lastCheckpointReached + 1,
                     isRaceFinished, (isRaceFinished ? raceElapsedTime : 0.0),
-                    isSpinning, isDrifting, static_cast<int>(heldItem));
+                    isSpinning, isDrifting, static_cast<int>(heldGear),
+                    playerHull.integrity, progressMeters, player1.isEliminated);
             }
-        } else if (selectedGameMode == GameMode::PLAY_VS_AI) {
+        } else if (selectedGameMode == GameMode::RANKED_ESCAPE) {
             updateAIOpponents(dt);
         }
-        updateItemSystem(dt);
-        updateTrackHazards(dt);
-        if (isCelebrationActive) {
-            updateCelebration(dt);
+
+        updateGearSystem(dt);
+        updateProjectiles(dt);
+        updateRankings();
+        updateAshParticles(dt);
+        updateWorldParticles(dt);
+        updateCelebration(dt);
+
+        {
+            const SeismicState &ss = hazardSystem.getSeismicState();
+            cameraShakeX = ss.shakeX;
+            cameraShakeY = ss.shakeY;
+            horizonPitchOffset = ss.pitchOffset;
+            if (damageFlashTimer > 0.0) {
+                damageFlashTimer = std::max(0.0, damageFlashTimer - dt);
+                cameraShakeX += ((rand() % 9) - 4) * damageFlashTimer * 1.6;
+                cameraShakeY += ((rand() % 9) - 4) * damageFlashTimer * 1.6;
+            }
+            if (hitRippleTimer > 0.0) {
+                hitRippleTimer = std::max(0.0, hitRippleTimer - dt);
+            }
+            if (lightningFlashTimer > 0.0) {
+                lightningFlashTimer = std::max(0.0, lightningFlashTimer - dt);
+            } else if ((rand() % 420) == 0) {
+                lightningFlashTimer = 0.22;
+            }
         }
 
         renderSky();
         renderGroundMode7();
         renderSprites();
+        renderAshOverlay();
+        renderSpeedLines();
         renderCockpit();
-        renderItemHUD();
+        renderWindshieldCracks();
         renderMinimap();
-        renderInkOverlay();
+        renderGearHUD();
+        renderEscapeHUD();
         if (isCelebrationActive) {
             renderCelebration();
         }
+        renderWipeTransition();
 
-        emit statsUpdated(kartSpeed, currentLap, kartX, kartZ, kartAngle * (180.0 / M_PI), currentSurfaceName);
+        {
+            double deg = std::fmod(kartAngle * 180.0 / M_PI + 360.0, 360.0);
+            int totalRacers = isNetworkRace ? static_cast<int>(remoteKarts.size() + 1)
+                              : (selectedGameMode == GameMode::RANKED_ESCAPE ? static_cast<int>(aiOpponents.size() + 1) : 1);
+            emit statsUpdated(kartSpeed, lastCheckpointReached + 1, kartX, kartZ, deg, currentSurfaceName);
+            emit survivalTelemetryUpdated(playerHull.integrity, evacTimer, playerPlacement, totalRacers,
+                                          static_cast<int>(splineProgress * 100.0),
+                                          GarageSystem::instance().getScrapBalance(),
+                                          currentDistrictName);
+        }
         break;
 
     case GameState::RACE_FINISHED:
-        updatePhysics(dt);
-        if (isNetworkRace) {
-            updateRemoteKarts(dt);
-            networkSyncTimer += dt;
-            if (networkSyncTimer >= 0.033 && networkManager) {
-                networkSyncTimer = 0.0;
-                networkManager->broadcastLocalKartState(
-                    kartX, kartZ, kartAngle, kartSpeed, currentLap,
-                    true, raceElapsedTime,
-                    isSpinning, isDrifting, static_cast<int>(heldItem));
-            }
-        } else if (selectedGameMode == GameMode::PLAY_VS_AI) {
-            updateAIOpponents(dt);
-        }
-        updateTrackHazards(dt);
-        if (isCelebrationActive) {
-            updateCelebration(dt);
-        }
-
+        updateAshParticles(dt);
+        updateWorldParticles(dt);
+        updateCelebration(dt);
         renderSky();
         renderGroundMode7();
         renderSprites();
+        renderAshOverlay();
         renderCockpit();
-        renderItemHUD();
-        renderMinimap();
-        renderInkOverlay();
-        if (isCelebrationActive) {
-            renderCelebration();
-        }
+        renderWindshieldCracks();
         if (isNetworkRace) {
             renderMultiplayerRankings();
         } else {
             renderRaceFinishedOverlay();
         }
-
-        emit statsUpdated(kartSpeed, currentLap, kartX, kartZ, kartAngle * (180.0 / M_PI), "🏆 RACE FINISHED!");
+        renderWipeTransition();
         break;
     }
 
-    this->update(); // Request Qt paintEvent
+    this->update();
+}
+
+void GameCanvas::applyCraterStamps()
+{
+    auto &stamps = hazardSystem.getCraterStamps();
+    bool anyNew = false;
+    for (auto &stamp : stamps) {
+        if (stamp.stamped) continue;
+        stamp.stamped = true;
+        anyNew = true;
+
+        QPainter vp(&trackVisualMap);
+        vp.setPen(Qt::NoPen);
+        vp.setBrush(QColor(18, 15, 14, 225));
+        vp.drawEllipse(QPointF(stamp.x, stamp.z), stamp.radius, stamp.radius * 0.85);
+        vp.setBrush(QColor(8, 6, 6, 240));
+        vp.drawEllipse(QPointF(stamp.x, stamp.z), stamp.radius * 0.55, stamp.radius * 0.45);
+        vp.end();
+
+        QPainter mp(&trackMaskMap);
+        mp.setPen(Qt::NoPen);
+        mp.setBrush(QColor::fromRgba(KolkataMap::MASK_OFFROAD));
+        mp.drawEllipse(QPointF(stamp.x, stamp.z), stamp.radius * 0.75, stamp.radius * 0.75);
+        mp.end();
+
+        // Spawn 3D concrete dust & ember burst at girder impact
+        for (int i = 0; i < 18; ++i) {
+            double ang = (rand() % 360) * M_PI / 180.0;
+            double spd = 15.0 + (rand() % 35);
+            bool ember = (i % 3 == 0);
+            spawnWorldParticle(stamp.x, 2.0, stamp.z,
+                               std::cos(ang) * spd, 10.0 + (rand() % 18), std::sin(ang) * spd,
+                               0.8 + (rand() % 6) * 0.15, ember ? 3.5 : 8.0,
+                               ember ? qRgb(255, 145, 30) : qRgb(115, 108, 102),
+                               ember ? WorldParticleKind::EMBER : WorldParticleKind::DUST);
+        }
+    }
+    if (anyNew) updateMinimapTrackCache();
+}
+
+void GameCanvas::updateEvacTimer(double dt)
+{
+    if (isRaceFinished) return;
+    evacTimer -= dt;
+    if (evacTimer <= 0.0) {
+        evacTimer = 0.0;
+        finishRun(false, "EVACUATION WINDOW EXPIRED (00:00)");
+    }
+}
+
+void GameCanvas::updateCollapseWave(double dt)
+{
+    if (isRaceFinished) return;
+    collapseWaveProgress += collapseWaveSpeed * dt;
+    if (collapseWaveProgress > splineProgress + 0.015 && splineProgress > 0.04) {
+        playerHull.takeDamage(16.0 * dt, armorRating);
+        damageFlashTimer = 0.25;
+        if (playerHull.isWrecked()) {
+            finishRun(false, "SWALLOWED BY COLLAPSING SECTOR");
+        }
+    }
+}
+
+void GameCanvas::finishRun(bool survived, const QString &reason)
+{
+    if (isRaceFinished) return;
+
+    if (!survived) {
+        isRaceFinished = true;
+        didSurviveRun = false;
+        finishReason = reason;
+        player1.raceFinished = true;
+        player1.isEliminated = true;
+        player1.finishTime = 9999.0;
+        updateRankings();
+        GarageSystem::instance().addScrap(25 + scrapCollectedThisRun / 2);
+        if (isNetworkRace && networkManager) {
+            networkManager->sendEliminated();
+            networkManager->notifyLocalFinish(9999.0);
+        }
+        currentState = GameState::RACE_FINISHED;
+        triggerCelebration("VEHICLE LOST", reason);
+        return;
+    }
+
+    // Continuous 3-stage campaign progression!
+    if (currentStage != KolkataStage::HOWRAH_BRIDGE) {
+        // Stage 1 -> Stage 2, or Stage 2 -> Stage 3 via Relay Pit-Stop!
+        GarageSystem::instance().addScrap(150 + scrapCollectedThisRun);
+        enterCheckpointPit(static_cast<int>(currentStage) + 10, true);
+        return;
+    }
+
+    // Cleared Stage 3 (Howrah Bridge) -> Full Kolkata Evacuation Victory!
+    isRaceFinished = true;
+    didSurviveRun = true;
+    finishReason = "ALL 3 SECTORS CLEARED — WEST BANK REACHED!";
+    player1.raceFinished = true;
+    player1.finishTime = raceElapsedTime;
+    player1.isEliminated = false;
+    updateRankings();
+
+    GarageSystem &garage = GarageSystem::instance();
+    garage.currentHull() = playerHull;
+    garage.awardRaceScrap(playerPlacement, scrapCollectedThisRun + 250);
+    activeCheckpointSave.valid = false;
+
+    if (isNetworkRace && networkManager) {
+        networkManager->notifyLocalFinish(raceElapsedTime);
+    }
+
+    currentState = GameState::RACE_FINISHED;
+    triggerCelebration("KOLKATA EVACUATED!",
+                       QString("RANK #%1 • TIME %2s").arg(playerPlacement).arg(QString::number(raceElapsedTime, 'f', 1)));
+}
+
+QString GameCanvas::determineDistrictName() const
+{
+    if (currentStage == KolkataStage::GARIAHAT_COLLAPSE) {
+        if (splineProgress < 0.28) return "GARIAHAT CROSSING";
+        if (splineProgress < 0.55) return "GOLPARK / RASHBEHARI";
+        if (splineProgress < 0.80) return "BALLYGUNGE PHARI";
+        return "PARK CIRCUS / AJC BOSE";
+    } else if (currentStage == KolkataStage::PARK_STREET_RUINS) {
+        if (splineProgress < 0.28) return "PARK STREET RUINS";
+        if (splineProgress < 0.55) return "CHOWRINGHEE / ESPLANADE";
+        if (splineProgress < 0.80) return "VICTORIA MEMORIAL / MAIDAN";
+        return "SHAHEED MINAR / PRINSEP";
+    } else {
+        if (splineProgress < 0.28) return "BBD BAGH / WRITERS'";
+        if (splineProgress < 0.55) return "STRAND ROAD DOCKS";
+        if (splineProgress < 0.84) return "HOWRAH BRIDGE CANTILEVER";
+        return "WEST BANK EVAC BUNKER";
+    }
+}
+
+void GameCanvas::triggerCheckpoints(double oldX, double oldZ, double newX, double newZ)
+{
+    auto segmentsIntersect = [](double ax, double az, double bx, double bz,
+                                double cx, double cz, double dx, double dz) -> bool {
+        auto cross = [](double x1, double y1, double x2, double y2) {
+            return x1 * y2 - y1 * x2;
+        };
+        double d1 = cross(dx - cx, dz - cz, ax - cx, az - cz);
+        double d2 = cross(dx - cx, dz - cz, bx - cx, bz - cz);
+        double d3 = cross(bx - ax, bz - az, cx - ax, cz - az);
+        double d4 = cross(bx - ax, bz - az, dx - ax, dz - az);
+        return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+               ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+    };
+
+    for (const auto &cp : stageCheckpoints) {
+        if (cp.index == lastCheckpointReached + 1) {
+            bool crossedSeg = segmentsIntersect(oldX, oldZ, newX, newZ, cp.x1, cp.z1, cp.x2, cp.z2);
+            double midX = 0.5 * (cp.x1 + cp.x2);
+            double midZ = 0.5 * (cp.z1 + cp.z2);
+            double distMid = std::hypot(newX - midX, newZ - midZ);
+            if (crossedSeg || distMid < 54.0) {
+                lastCheckpointReached = cp.index;
+                nextCheckpoint = cp.index + 1;
+                evacTimer = std::min(evacTimerMax, evacTimer + cp.timeBonus);
+                lastSafeX = newX;
+                lastSafeZ = newZ;
+                lastSafeAngle = kartAngle;
+                saveCheckpointSnapshot(cp.index);
+
+                if (isNetworkRace) {
+                    // Synchronized Multiplayer Checkpoint Wait!
+                    enterCheckpointPit(cp.index, false);
+                } else {
+                    checkpointPromptTimer = 12.0;
+                    triggerCelebration(QString("CHECKPOINT %1 SAVED").arg(cp.index),
+                                       QString("+%1s • PRESS [P] FOR PIT-STOP").arg(static_cast<int>(cp.timeBonus)));
+                }
+            }
+        }
+    }
 }
 
 void GameCanvas::updatePhysics(double dt)
 {
     if (dt > 0.05) dt = 0.05;
+    if (isRaceFinished) return;
 
-    // Handle race finish status - coast to a stop and lock controls
-    if (isRaceFinished) {
-        kartSpeed = std::max(0.0, kartSpeed - 55.0 * dt);
-        kartX += kartSpeed * std::cos(kartAngle) * dt;
-        kartZ += kartSpeed * std::sin(kartAngle) * dt;
-        currentSurfaceName = "🏆 RACE FINISHED! (PRESS R TO RESTART)";
-        return;
-    }
-
-    // Handle spinout status
     if (isSpinning) {
         spinTimer -= dt;
         if (spinTimer <= 0.0) {
@@ -983,150 +1041,154 @@ void GameCanvas::updatePhysics(double dt)
         }
         isDrifting = false;
         driftTimer = 0.0;
-        driftHopTimer = 0.0;
-        driftHopHeight = 0.0;
         lateralSlipAngle = 0.0;
+        bodyRoll *= 0.9;
         driftSparks.clear();
 
-        kartAngle += 14.0 * dt;
-        kartSpeed = std::max(0.0, kartSpeed - 140.0 * dt);
-        kartX += kartSpeed * std::cos(kartAngle) * dt;
-        kartZ += kartSpeed * std::sin(kartAngle) * dt;
-        currentSurfaceName = "SPINNING OUT!";
+        kartAngle += 11.0 * dt;
+        kartSpeed = std::max(0.0, kartSpeed - 135.0 * dt);
+        kartX = std::clamp(kartX + kartSpeed * std::cos(kartAngle) * dt, 16.0, static_cast<double>(TRACK_MAP_SIZE - 16));
+        kartZ = std::clamp(kartZ + kartSpeed * std::sin(kartAngle) * dt, 16.0, static_cast<double>(TRACK_MAP_SIZE - 16));
+        currentSurfaceName = "LOSS OF TRACTION!";
         return;
     }
 
-    // Buff / Debuff timers countdown
-    if (inkTimer > 0.0) {
-        inkTimer = std::max(0.0, inkTimer - dt);
-    }
-    if (mushroomBoostTimer > 0.0) {
-        mushroomBoostTimer = std::max(0.0, mushroomBoostTimer - dt);
-    }
-    if (miniTurboTimer > 0.0) {
-        miniTurboTimer = std::max(0.0, miniTurboTimer - dt);
+    if (playerHull.isOnFire) {
+        playerHull.fireTimer -= dt;
+        playerHull.takeDamage(3.8 * dt, armorRating);
+        if (playerHull.fireTimer <= 0.0) {
+            playerHull.isOnFire = false;
+            playerHull.fireTimer = 0.0;
+        }
+        if (playerHull.isWrecked()) {
+            finishRun(false, "CHASSIS CONSUMED BY FIRE");
+            return;
+        }
     }
 
-    // Sample terrain mask
-    int sampleU = (static_cast<int>(kartX) % TRACK_MAP_SIZE + TRACK_MAP_SIZE) % TRACK_MAP_SIZE;
-    int sampleV = (static_cast<int>(kartZ) % TRACK_MAP_SIZE + TRACK_MAP_SIZE) % TRACK_MAP_SIZE;
+    if (miniTurboTimer > 0.0) miniTurboTimer = std::max(0.0, miniTurboTimer - dt);
+    if (nitrousBoostTimer > 0.0) nitrousBoostTimer = std::max(0.0, nitrousBoostTimer - dt);
+    if (dozerRamTimer > 0.0) dozerRamTimer = std::max(0.0, dozerRamTimer - dt);
+
+    bool holdingSpace = pressedKeys.count(Qt::Key_Space) > 0;
+    if (holdingSpace && nitrousFuel > 0.0) {
+        nitrousActive = true;
+        nitrousFuel = std::max(0.0, nitrousFuel - 25.0 * dt);
+        if (nitrousFuel <= 0.0) nitrousActive = false;
+    } else if (!holdingSpace) {
+        nitrousActive = false;
+        nitrousFuel = std::min(nitrousMaxFuel, nitrousFuel + 2.8 * dt);
+    }
+
+    int sampleU = std::clamp(static_cast<int>(kartX), 0, TRACK_MAP_SIZE - 1);
+    int sampleV = std::clamp(static_cast<int>(kartZ), 0, TRACK_MAP_SIZE - 1);
     QRgb maskColor = trackMaskMap.pixel(sampleU, sampleV);
+    int mr = qRed(maskColor), mg = qGreen(maskColor), mb = qBlue(maskColor);
 
     double currentMaxSpeed = maxSpeed;
     double currentDrag = friction;
     double currentAccel = accel;
 
-    // Buff / Debuff modifiers
-    if (inkTimer > 0.0) {
-        currentMaxSpeed *= 0.70; // 30% speed debuff
-    }
     if (miniTurboTimer > 0.0) {
-        currentMaxSpeed *= 1.35; // 35% mini-turbo speed boost
-        currentAccel *= 1.80;
+        currentMaxSpeed *= 1.28;
+        currentAccel *= 1.65;
     }
-    if (mushroomBoostTimer > 0.0) {
-        currentMaxSpeed = maxSpeed * 1.55;
-        currentAccel = accel * 2.20;
+    if (nitrousActive || nitrousBoostTimer > 0.0) {
+        currentMaxSpeed = maxSpeed * 1.48;
+        currentAccel = accel * 2.0;
     }
 
-    // Terrain mask effects
-    bool isWhiteRoad = (qRed(maskColor) == 255 && qGreen(maskColor) == 255 && qBlue(maskColor) == 255);
-    bool isStartFinish = (qRed(maskColor) == 255 && qGreen(maskColor) == 255 && qBlue(maskColor) == 0);
-    bool isLava = (qRed(maskColor) == 255 && qBlue(maskColor) == 255 && qGreen(maskColor) == 0);
-    bool isOffroad = (qGreen(maskColor) == 255 && qRed(maskColor) == 0);
+    bool isWall       = (mr > 180 && mg < 80  && mb < 80);
+    bool isLethal     = (mr > 180 && mb > 180 && mg < 80);
+    bool isCheckpoint = (mr > 180 && mg > 180 && mb < 80);
+    bool isTram       = (mb > 180 && mr < 80  && mg < 80);
+    bool isOffroad    = (mg > 180 && mr < 80  && mb < 80);
 
-    if (isWhiteRoad || isStartFinish) {
-        if (miniTurboTimer > 0.0) {
-            currentSurfaceName = "Road (⚡ MINI-TURBO! ⚡)";
-        } else if (mushroomBoostTimer > 0.0) {
-            currentSurfaceName = "Road (BOOST ACTIVE!)";
-        } else if (isDrifting) {
-            currentSurfaceName = (driftTimer >= 1.0) ? "Road (🔥 DRIFT CHARGED! 🔥)" : "Road (Drifting...)";
-        } else {
-            currentSurfaceName = "Road (Tarmac)";
+    if (isLethal) {
+        playerHull.takeDamage(18.0, armorRating);
+        damageFlashTimer = 0.65;
+        hitRippleTimer = 0.55;
+        if (playerHull.isWrecked()) {
+            finishRun(false, "LOST IN SINKHOLE / HOOGHLY");
+            return;
         }
-    } else if (isLava) {
-        currentSurfaceName = "LAVA RECOIL! (Sizzle)";
-        kartSpeed = std::max(0.0, kartSpeed * 0.35);
-        kartX -= std::cos(kartAngle) * 8.0;
-        kartZ -= std::sin(kartAngle) * 8.0;
-        isSpinning = true;
-        spinTimer = 0.45;
-        flashIntensity = 0.5;
-        isDrifting = false;
-        driftTimer = 0.0;
-        driftHopTimer = 0.0;
-        driftHopHeight = 0.0;
-        lateralSlipAngle = 0.0;
-        driftSparks.clear();
+        kartX = lastSafeX;
+        kartZ = lastSafeZ;
+        kartAngle = lastSafeAngle;
+        kartSpeed = 28.0;
+        currentSurfaceName = "BRIDGE / SINKHOLE RECOVERY";
         return;
+    } else if (isTram) {
+        currentSurfaceName = "Steel Tram Rails";
+        currentMaxSpeed *= std::min(1.0, 0.88 + offroadGripBonus * 0.5);
+        if (std::abs(kartSpeed) > 40.0 && (rand() % 3 == 0)) {
+            spawnWorldParticle(kartX, 1.0, kartZ, ((rand() % 20) - 10), 8.0, ((rand() % 20) - 10),
+                               0.35, 3.0, qRgb(130, 225, 255), WorldParticleKind::SPARK);
+        }
     } else if (isOffroad) {
-        currentSurfaceName = (currentLevel == TrackLevel::BOWSER_CASTLE) ? "Stone Curb (Shoulder)" : "Off-road (Grass/Sand)";
-        if (mushroomBoostTimer <= 0.0 && miniTurboTimer <= 0.0) {
-            currentMaxSpeed *= (currentLevel == TrackLevel::BOWSER_CASTLE) ? 0.70 : 0.45;
-            currentDrag *= 2.2;
+        currentSurfaceName = "Rubble & Debris";
+        if (!nitrousActive && nitrousBoostTimer <= 0.0 && dozerRamTimer <= 0.0) {
+            currentMaxSpeed *= std::min(0.88, 0.55 + offroadGripBonus);
+            currentDrag *= std::max(1.1, 1.9 - offroadGripBonus * 1.8);
+        }
+    } else if (isCheckpoint) {
+        currentSurfaceName = "Relay Checkpoint";
+    } else {
+        currentSurfaceName = (nitrousActive || nitrousBoostTimer > 0.0) ? "NITROUS OVERDRIVE"
+                           : (dozerRamTimer > 0.0) ? "RAM SHIELD ENGAGED"
+                           : (isDrifting ? "Asphalt (POWERSLIDE)" : "Cracked Asphalt");
+        if (!isWall && kartSpeed > 15.0) {
+            lastSafeX = kartX;
+            lastSafeZ = kartZ;
+            lastSafeAngle = kartAngle;
         }
     }
 
-    // Controls
-    bool forward = pressedKeys.count(Qt::Key_W) || pressedKeys.count(Qt::Key_Up);
+    bool forward  = pressedKeys.count(Qt::Key_W) || pressedKeys.count(Qt::Key_Up);
     bool backward = pressedKeys.count(Qt::Key_S) || pressedKeys.count(Qt::Key_Down);
-    bool left = pressedKeys.count(Qt::Key_A) || pressedKeys.count(Qt::Key_Left);
-    bool right = pressedKeys.count(Qt::Key_D) || pressedKeys.count(Qt::Key_Right);
-    bool driftKey = pressedKeys.count(Qt::Key_Shift) > 0 || pressedKeys.count(Qt::Key_Space) > 0;
+    bool left     = pressedKeys.count(Qt::Key_A) || pressedKeys.count(Qt::Key_Left);
+    bool right    = pressedKeys.count(Qt::Key_D) || pressedKeys.count(Qt::Key_Right);
+    bool driftKey = pressedKeys.count(Qt::Key_Shift) > 0;
 
     int steerDirection = 0;
     if (left && !right) steerDirection = -1;
     else if (right && !left) steerDirection = 1;
 
-    // WASD Throttle & High-Grip Braking
     if (forward) {
         double ratio = (currentMaxSpeed > 0.0) ? (kartSpeed / currentMaxSpeed) : 0.0;
-        double accelEff = currentAccel * (1.0 - 0.4 * std::clamp(ratio, 0.0, 1.0));
-        kartSpeed += accelEff * dt;
-        if (kartSpeed > currentMaxSpeed) kartSpeed = currentMaxSpeed;
+        double accelEff = currentAccel * (1.0 - 0.35 * std::clamp(ratio, 0.0, 1.0));
+        kartSpeed = std::min(currentMaxSpeed, kartSpeed + accelEff * dt);
     } else if (backward) {
-        kartSpeed -= brakeDecel * dt;
-        double maxReverse = -0.30 * maxSpeed;
-        if (kartSpeed < maxReverse) kartSpeed = maxReverse;
+        kartSpeed = std::max(-0.35 * maxSpeed, kartSpeed - brakeDecel * dt);
     } else {
-        if (kartSpeed > 0.0) {
-            kartSpeed -= currentDrag * dt;
-            if (kartSpeed < 0.0) kartSpeed = 0.0;
-        } else if (kartSpeed < 0.0) {
-            kartSpeed += currentDrag * dt;
-            if (kartSpeed > 0.0) kartSpeed = 0.0;
-        }
+        if (kartSpeed > 0.0) kartSpeed = std::max(0.0, kartSpeed - currentDrag * dt);
+        else if (kartSpeed < 0.0) kartSpeed = std::min(0.0, kartSpeed + currentDrag * dt);
     }
 
-    // Dedicated Drift Mechanic & Hop
-    if (driftKey && steerDirection != 0 && kartSpeed > 40.0) {
+    // Handbrake Powerslide (NO cute kart hop — pure body roll & rear tire smoke!)
+    if (driftKey && steerDirection != 0 && kartSpeed > 38.0) {
         if (!isDrifting) {
             isDrifting = true;
             driftDirection = steerDirection;
             driftTimer = 0.0;
-            driftHopTimer = 0.22;
         }
         driftTimer += dt;
-
-        double driftTurnMult = this->driftFactor;
-        if (steerDirection == driftDirection) {
-            driftTurnMult *= 1.25;
-        } else {
-            driftTurnMult *= 0.45;
-        }
+        double driftTurnMult = this->driftFactor * ((steerDirection == driftDirection) ? 1.22 : 0.48);
         kartAngle += driftDirection * this->turnRate * driftTurnMult * dt;
-
-        double targetBeta = driftDirection * 0.28 * this->driftFactor;
+        double targetBeta = driftDirection * 0.25 * this->driftFactor;
         lateralSlipAngle += (targetBeta - lateralSlipAngle) * 8.0 * dt;
-
         updateDriftSparks(dt);
+
+        if ((rand() % 2) == 0) {
+            spawnWorldParticle(kartX, 1.5, kartZ, ((rand() % 14) - 7), 6.0, ((rand() % 14) - 7),
+                               0.5, 6.0, qRgb(95, 92, 90), WorldParticleKind::SMOKE);
+        }
     } else {
         if (isDrifting) {
-            if (driftTimer >= 1.0) {
-                miniTurboTimer = 1.2;
-                kartSpeed = std::min(currentMaxSpeed * 1.35, kartSpeed + 25.0);
-                flashIntensity = 0.35;
+            if (driftTimer >= 0.85) {
+                miniTurboTimer = 1.0;
+                kartSpeed = std::min(currentMaxSpeed * 1.28, kartSpeed + 20.0);
+                flashIntensity = 0.22;
             }
             isDrifting = false;
             driftTimer = 0.0;
@@ -1134,42 +1196,150 @@ void GameCanvas::updatePhysics(double dt)
             driftSparks.clear();
         }
         lateralSlipAngle += (0.0 - lateralSlipAngle) * 12.0 * dt;
-
-        double steerSpeedFactor = (std::abs(kartSpeed) > 1.0) ? std::clamp(std::abs(kartSpeed) / 50.0, 0.70, 1.30) : 0.0;
+        double steerSpeedFactor = (std::abs(kartSpeed) > 1.0)
+            ? std::clamp(std::abs(kartSpeed) / 48.0, 0.72, 1.28) : 0.0;
         kartAngle += steerDirection * this->turnRate * steerSpeedFactor * dt;
     }
 
-    // Drift Hop Parabola
-    if (driftHopTimer > 0.0) {
-        driftHopTimer -= dt;
-        if (driftHopTimer < 0.0) driftHopTimer = 0.0;
-        double tau = 1.0 - (driftHopTimer / 0.22);
-        driftHopHeight = 3.5 * std::sin(M_PI * std::clamp(tau, 0.0, 1.0));
-    } else {
-        driftHopHeight = 0.0;
-    }
+    // Body roll banking in turns (used by scanline horizon/ground tilt)
+    double targetRoll = (isDrifting ? driftDirection * 0.045 : steerDirection * 0.022) * std::clamp(kartSpeed / 120.0, 0.0, 1.0);
+    bodyRoll += (targetRoll - bodyRoll) * 8.0 * dt;
 
-    // Cockpit wheel animation lerp
-    double targetWheelAngle = steerDirection * 0.35;
-    if (isDrifting) targetWheelAngle = driftDirection * 0.50;
+    double targetWheelAngle = isDrifting ? (driftDirection * 0.55) : (steerDirection * 0.40);
     steeringVisualAngle += (targetWheelAngle - steeringVisualAngle) * 10.0 * dt;
 
-    // Angle wrap [0, 2*PI]
     while (kartAngle >= 2.0 * M_PI) kartAngle -= 2.0 * M_PI;
     while (kartAngle < 0.0) kartAngle += 2.0 * M_PI;
 
-    double oldX = kartX;
+    double oldX = kartX, oldZ = kartZ;
     double travelAngle = kartAngle - lateralSlipAngle;
-    kartX += kartSpeed * std::cos(travelAngle) * dt;
-    kartZ += kartSpeed * std::sin(travelAngle) * dt;
+    double nextX = std::clamp(kartX + kartSpeed * std::cos(travelAngle) * dt, 16.0, static_cast<double>(TRACK_MAP_SIZE - 16));
+    double nextZ = std::clamp(kartZ + kartSpeed * std::sin(travelAngle) * dt, 16.0, static_cast<double>(TRACK_MAP_SIZE - 16));
 
-    // Boundary wrapping
-    while (kartX < 0.0) kartX += 1024.0;
-    while (kartX >= 1024.0) kartX -= 1024.0;
-    while (kartZ < 0.0) kartZ += 1024.0;
-    while (kartZ >= 1024.0) kartZ -= 1024.0;
+    int nu = std::clamp(static_cast<int>(nextX), 0, TRACK_MAP_SIZE - 1);
+    int nv = std::clamp(static_cast<int>(nextZ), 0, TRACK_MAP_SIZE - 1);
+    QRgb nextMask = trackMaskMap.pixel(nu, nv);
+    if (qRed(nextMask) > 180 && qGreen(nextMask) < 80 && qBlue(nextMask) < 80) {
+        auto isWallAt = [&](int px, int pz) -> double {
+            px = std::clamp(px, 0, TRACK_MAP_SIZE - 1);
+            pz = std::clamp(pz, 0, TRACK_MAP_SIZE - 1);
+            QRgb c = trackMaskMap.pixel(px, pz);
+            return (qRed(c) > 180 && qGreen(c) < 80 && qBlue(c) < 80) ? 1.0 : 0.0;
+        };
+        double nx = isWallAt(nu - 4, nv) - isWallAt(nu + 4, nv);
+        double nz = isWallAt(nu, nv - 4) - isWallAt(nu, nv + 4);
+        double nLen = std::hypot(nx, nz);
+        if (nLen > 0.01) {
+            kartX = std::clamp(nextX + (nx / nLen) * 4.5, 16.0, static_cast<double>(TRACK_MAP_SIZE - 16));
+            kartZ = std::clamp(nextZ + (nz / nLen) * 4.5, 16.0, static_cast<double>(TRACK_MAP_SIZE - 16));
+        } else {
+            kartX = oldX;
+            kartZ = oldZ;
+        }
+        if (kartSpeed > 45.0) {
+            playerHull.takeDamage(2.0, armorRating);
+            damageFlashTimer = 0.22;
+            spawnWorldParticle(kartX, 3.0, kartZ, 0.0, 12.0, 0.0, 0.35, 3.0, qRgb(255, 200, 75), WorldParticleKind::SPARK);
+        }
+        kartSpeed *= 0.68;
+    } else {
+        kartX = nextX;
+        kartZ = nextZ;
+    }
 
-    // Synchronize player1 entity
+    if (dozerRamTimer <= 0.0) {
+        CollisionResult cr = hazardSystem.checkPlayerCollision(kartX, kartZ, kartAngle, kartSpeed, playerHull);
+        if (cr.hit) {
+            kartSpeed *= cr.speedMultiplier;
+            kartX = std::clamp(kartX + cr.pushX, 16.0, static_cast<double>(TRACK_MAP_SIZE - 16));
+            kartZ = std::clamp(kartZ + cr.pushZ, 16.0, static_cast<double>(TRACK_MAP_SIZE - 16));
+            if (cr.spinOut) {
+                isSpinning = true;
+                spinTimer = cr.spinDuration;
+            }
+            if (cr.resetToCheckpoint) {
+                kartX = lastSafeX;
+                kartZ = lastSafeZ;
+                kartAngle = lastSafeAngle;
+                evacTimer = std::max(0.0, evacTimer - 1.5);
+            }
+            if (cr.damageDealt > 0.0) {
+                damageFlashTimer = 0.55;
+                hitRippleTimer = 0.45;
+                hazardSystem.triggerQuake(0.5);
+                for (int i = 0; i < 10; ++i) {
+                    spawnWorldParticle(kartX, 3.0, kartZ, ((rand() % 40) - 20), 14.0 + (rand() % 14), ((rand() % 40) - 20),
+                                       0.5, 4.0, qRgb(255, 160, 40), WorldParticleKind::SPARK);
+                }
+            }
+            if (playerHull.isWrecked()) {
+                finishRun(false, "CHASSIS DESTROYED BY WRECKAGE");
+                return;
+            }
+        }
+    }
+
+    // Direct grounded tactical pickups (ZERO Mario roulette)
+    for (auto &sprite : worldSprites) {
+        if (!sprite.active) continue;
+        double dx = kartX - sprite.x;
+        double dz = kartZ - sprite.z;
+        double distSq = dx * dx + dz * dz;
+
+        if (SpriteAtlas::instance().isPickup(sprite.type)) {
+            if (distSq < 22.0 * 22.0) {
+                sprite.active = false;
+                sprite.respawnTimer = 18.0;
+                if (sprite.type == SpriteType::REPAIR_KIT || sprite.type == SpriteType::ROCKET) {
+                    double heal = (player1.vehicleId == 3) ? 35.0 : 25.0;
+                    playerHull.repair(heal);
+                    playerHull.isOnFire = false;
+                    flashIntensity = 0.22;
+                } else if (sprite.type == SpriteType::NITROUS_CELL || sprite.type == SpriteType::MUSHROOM) {
+                    nitrousFuel = std::min(nitrousMaxFuel, nitrousFuel + 50.0);
+                    nitrousBoostTimer = 1.2 * (1.0 + GarageSystem::instance().upgrades().nitrousLevel * 0.15);
+                } else if (sprite.type == SpriteType::SCRAP_CACHE || sprite.type == SpriteType::COIN) {
+                    int gain = 45 + (rand() % 45);
+                    scrapCollectedThisRun += gain;
+                    GarageSystem::instance().addScrap(gain);
+                } else if (sprite.type == SpriteType::SUPPLY_CRATE || sprite.type == SpriteType::QUESTION_BOX) {
+                    // Direct tactical equipment grant — Dozer Ram or Shockwave Flare
+                    if (heldGear == SurvivalGear::NONE) {
+                        heldGear = (rand() % 2 == 0) ? SurvivalGear::DOZER_RAM : SurvivalGear::SHOCKWAVE_FLARE;
+                    } else {
+                        int gain = 40;
+                        scrapCollectedThisRun += gain;
+                        GarageSystem::instance().addScrap(gain);
+                    }
+                }
+            }
+        } else if (SpriteAtlas::instance().isObstacle(sprite.type)) {
+            double hitR = 14.0;
+            if (distSq < hitR * hitR) {
+                if (dozerRamTimer > 0.0) {
+                    sprite.active = false;
+                    scrapCollectedThisRun += 30;
+                    hazardSystem.triggerQuake(0.35);
+                } else {
+                    double dist = std::max(0.01, std::sqrt(distSq));
+                    kartX = std::clamp(sprite.x + (dx / dist) * (hitR + 4.0), 16.0, static_cast<double>(TRACK_MAP_SIZE - 16));
+                    kartZ = std::clamp(sprite.z + (dz / dist) * (hitR + 4.0), 16.0, static_cast<double>(TRACK_MAP_SIZE - 16));
+                    kartSpeed = -22.0;
+                    playerHull.takeDamage(12.0, armorRating);
+                    damageFlashTimer = 0.45;
+                    hitRippleTimer = 0.40;
+                    if (playerHull.isWrecked()) {
+                        finishRun(false, "WRECKED ON KOLKATA DEBRIS");
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    splineProgress = computeSplineProgress(kartX, kartZ, &progressMeters);
+    currentDistrictName = determineDistrictName();
+
     player1.x = kartX;
     player1.z = kartZ;
     player1.speed = kartSpeed;
@@ -1178,613 +1348,554 @@ void GameCanvas::updatePhysics(double dt)
     player1.driftTimer = driftTimer;
     player1.miniTurboTimer = miniTurboTimer;
     player1.lateralSlip = lateralSlipAngle;
-    player1.totalRaceDistance += kartSpeed * dt;
+    player1.hull = playerHull;
+    player1.splineProgress = splineProgress;
+    player1.progressMeters = progressMeters;
+    player1.lastCheckpointReached = lastCheckpointReached;
+    player1.totalRaceDistance += std::abs(kartSpeed) * dt;
 
-    // Halfway checkpoint detection: opposite side of the track (Z > 650)
-    if (kartZ > 650.0) {
-        hasPassedHalfway = true;
-    }
+    triggerCheckpoints(oldX, oldZ, kartX, kartZ);
 
-    // Finish line crossing detection: crossing X = 512.0 moving forward (East)
-    double trackZMin = (currentLevel == TrackLevel::BOWSER_CASTLE) ? 180.0 : 140.0;
-    double trackZMax = (currentLevel == TrackLevel::BOWSER_CASTLE) ? 320.0 : 260.0;
-
-    bool crossingFinishLine = (oldX < 512.0 && kartX >= 512.0 && kartZ >= trackZMin && kartZ <= trackZMax);
-
-    if (crossingFinishLine) {
-        if (!firstStartCrossed) {
-            firstStartCrossed = true;
-            triggerCelebration("RACE START!", "GO GO GO!");
-        } else if (hasPassedHalfway) {
-            hasPassedHalfway = false;
-            currentLap++;
-            if (currentLap == 2) {
-                triggerCelebration("★ LAP 2 ★", "SPEED UP!");
-            } else if (currentLap == 3) {
-                triggerCelebration("🔥 FINAL LAP! 🔥", "MAX SPEED!");
-            } else if (currentLap > 3) {
-                currentLap = 3;
-                isRaceFinished = true;
-                currentState = GameState::RACE_FINISHED;
-                if (isNetworkRace && networkManager) {
-                    networkManager->notifyLocalFinish(raceElapsedTime);
-                    triggerCelebration("🏁 RACE FINISHED! 🏁", "CHECKING RANKINGS...");
-                } else {
-                    triggerCelebration("🏁 1ST PLACE - VICTORY! 🏁", "COURSE CLEAR! PRESS [R] TO REPLAY");
-                }
-            }
-        }
-    }
-
-    // Sprite collection & obstacle collision
-    for (auto &sprite : worldSprites) {
-        if (!sprite.active) continue;
-        double dx = kartX - sprite.x;
-        double dz = kartZ - sprite.z;
-        double distSq = dx * dx + dz * dz;
-
-        // Obstacles have a precise, smaller hitbox (11 units) so they are easy to bypass
-        double hitRadius = (sprite.type == SpriteType::THWOMP || sprite.type == SpriteType::GREEN_PIPE) ? 11.0 : 18.0;
-
-        if (distSq < hitRadius * hitRadius) {
-            if (sprite.type == SpriteType::QUESTION_BOX) {
-                sprite.active = false;
-                sprite.respawnTimer = 7.0; // Respawns after 7 seconds
-                if (!isRouletteActive && heldItem == PlayerItem::NONE) {
-                    startItemRoulette();
-                }
-            } else if (sprite.type == SpriteType::COIN) {
-                sprite.active = false;
-                sprite.respawnTimer = 10.0;
-                kartSpeed = std::min(maxSpeed, kartSpeed + 18.0); // Mini speed boost
-            } else if (sprite.type == SpriteType::BANANA || sprite.type == SpriteType::BANANA_DROPPED || sprite.type == SpriteType::OIL_SLICK) {
-                if (sprite.ownerId == 0 && sprite.immunityTimer > 0.0) {
-                    continue;
-                }
-                sprite.active = false;
-                isSpinning = true;
-                spinTimer = 1.0;
-                kartSpeed *= 0.35;
-            } else if (sprite.type == SpriteType::GREEN_PIPE || sprite.type == SpriteType::THWOMP) {
-                // Solid obstacle collision bounce
-                kartSpeed = -30.0;
-                kartX -= std::cos(kartAngle) * 5.0;
-                kartZ -= std::sin(kartAngle) * 5.0;
-            } else if (sprite.type == SpriteType::MUSHROOM) {
-                sprite.active = false;
-                mushroomBoostTimer = 2.8;
-                kartSpeed = maxSpeed * 1.4;
-            }
+    if (!currentWaypoints.empty()) {
+        const QPointF &goal = currentWaypoints.back();
+        double distToGoal = std::hypot(kartX - goal.x(), kartZ - goal.y());
+        if ((splineProgress >= 0.985 || (distToGoal < 58.0 && splineProgress > 0.85))) {
+            finishRun(true, "EXTRACTION GATE REACHED!");
         }
     }
 }
 
 void GameCanvas::updateAIOpponents(double dt)
 {
-    if (aiOpponents.empty()) return;
+    if (aiOpponents.empty() || currentWaypoints.size() < 2) return;
     dt = std::min(dt, 0.05);
 
-    // Keep Player 1 state synced for rubber-banding and placement calculation
-    player1.totalRaceDistance += kartSpeed * dt;
-    player1.x = kartX;
-    player1.z = kartZ;
-    player1.speed = kartSpeed;
-    player1.angle = kartAngle;
-    player1.currentLap = currentLap;
-
-    const auto &waypoints = currentTrackWaypoints;
-    if (waypoints.empty()) return;
-    int N = static_cast<int>(waypoints.size());
+    double stageSpeedScale = (currentStage == KolkataStage::GARIAHAT_COLLAPSE) ? 0.82
+                           : (currentStage == KolkataStage::PARK_STREET_RUINS) ? 0.90 : 0.96;
 
     for (auto &ai : aiOpponents) {
-        // 1. Ink debuff decay (must update continuously regardless of spinout)
-        if (ai.inkTimer > 0.0) {
-            ai.inkTimer -= dt;
-            if (ai.inkTimer <= 0.0) {
-                ai.inkTimer = 0.0;
-                ai.isInked = false;
-            } else {
-                ai.isInked = true;
-            }
-        }
+        if (ai.raceFinished || ai.isEliminated) continue;
 
-        // 2. Spinout debuff decay and visual spin
-        if (ai.spinTimer > 0.0 || ai.isSpinning) {
+        if (ai.isSpinning) {
             ai.spinTimer -= dt;
-            if (ai.spinTimer <= 0.0) {
-                ai.spinTimer = 0.0;
-                ai.isSpinning = false;
-                int targetIdx = (ai.currentWaypoint + 1) % N;
-                ai.angle = std::atan2(waypoints[targetIdx].y() - ai.z, waypoints[targetIdx].x() - ai.x);
-            } else {
-                ai.isSpinning = true;
-                ai.angle += 12.0 * dt;
-                ai.speed *= std::pow(0.5, dt / 0.1);
-                if (ai.speed < 1.0) ai.speed = 0.0;
-                ai.x += ai.speed * std::cos(ai.angle) * dt;
-                ai.z += ai.speed * std::sin(ai.angle) * dt;
-                while (ai.x < 0.0) ai.x += TRACK_MAP_SIZE;
-                while (ai.x >= TRACK_MAP_SIZE) ai.x -= TRACK_MAP_SIZE;
-                while (ai.z < 0.0) ai.z += TRACK_MAP_SIZE;
-                while (ai.z >= TRACK_MAP_SIZE) ai.z -= TRACK_MAP_SIZE;
-                continue;
-            }
-        }
-
-        // 3. Collision with bananas and track hazards
-        for (auto &sprite : worldSprites) {
-            if (!sprite.active) continue;
-            if (sprite.type == SpriteType::BANANA || sprite.type == SpriteType::BANANA_DROPPED || sprite.type == SpriteType::OIL_SLICK) {
-                if (sprite.ownerId == ai.id && sprite.immunityTimer > 0.0) {
-                    continue;
-                }
-                double dx = ai.x - sprite.x;
-                double dz = ai.z - sprite.z;
-                if (dx * dx + dz * dz < 15.0 * 15.0) {
-                    sprite.active = false;
-                    ai.isSpinning = true;
-                    ai.spinTimer = 1.2;
-                    ai.speed *= 0.35;
-                    break;
-                }
-            }
-        }
-        if (ai.isSpinning) continue;
-
-        // 4. Advance waypoint when proximity < 40.0 units or past waypoint towards next
-        int curr = ai.currentWaypoint % N;
-        int nextWp = (curr + 1) % N;
-        double distCurr = std::hypot(waypoints[curr].x() - ai.x, waypoints[curr].y() - ai.z);
-        double distNext = std::hypot(waypoints[nextWp].x() - ai.x, waypoints[nextWp].y() - ai.z);
-        double segDx = waypoints[nextWp].x() - waypoints[curr].x();
-        double segDz = waypoints[nextWp].y() - waypoints[curr].y();
-        double kartDx = ai.x - waypoints[curr].x();
-        double kartDz = ai.z - waypoints[curr].y();
-        double proj = kartDx * segDx + kartDz * segDz;
-        if (distCurr < 40.0 || (proj > 0.0 && distNext < distCurr)) {
-            ai.currentWaypoint = nextWp;
-            ai.currentWaypointIndex = ai.currentWaypoint;
-        }
-
-        // 5. Sample surface to determine pure pursuit lookahead
-        int sampleU = (static_cast<int>(ai.x) % TRACK_MAP_SIZE + TRACK_MAP_SIZE) % TRACK_MAP_SIZE;
-        int sampleV = (static_cast<int>(ai.z) % TRACK_MAP_SIZE + TRACK_MAP_SIZE) % TRACK_MAP_SIZE;
-        QRgb maskColor = trackMaskMap.pixel(sampleU, sampleV);
-        bool isOnRoad = (qRed(maskColor) == 255 && qGreen(maskColor) == 255 && qBlue(maskColor) == 255) ||
-                        (qRed(maskColor) == 255 && qGreen(maskColor) == 255 && qBlue(maskColor) == 0);
-
-        // Check sharpness of upcoming corner
-        double curSegX = waypoints[nextWp].x() - waypoints[curr].x();
-        double curSegZ = waypoints[nextWp].y() - waypoints[curr].y();
-        int afterNextWp = (nextWp + 1) % N;
-        double nextSegX = waypoints[afterNextWp].x() - waypoints[nextWp].x();
-        double nextSegZ = waypoints[afterNextWp].y() - waypoints[nextWp].y();
-        double dotProduct = curSegX * nextSegX + curSegZ * nextSegZ;
-        double lenCur = std::hypot(curSegX, curSegZ);
-        double lenNext = std::hypot(nextSegX, nextSegZ);
-        bool isSharpCornerAhead = (lenCur > 1.0 && lenNext > 1.0 && (dotProduct / (lenCur * lenNext)) < 0.5);
-
-        double roadAngle = std::atan2(waypoints[nextWp].y() - ai.z, waypoints[nextWp].x() - ai.x);
-        double headingDiff = std::abs(ai.angle - roadAngle);
-        while (headingDiff > M_PI) headingDiff = std::abs(headingDiff - 2.0 * M_PI);
-        bool isTurnAligned = (headingDiff <= 0.45);
-
-        // On road and aligned: pure pursuit lookahead ((curr + 2) % N); otherwise steer to next waypoint
-        int lookaheadIdx = (isOnRoad && isTurnAligned && !isSharpCornerAhead) ? ((ai.currentWaypoint + 2) % N) : ((ai.currentWaypoint + 1) % N);
-        const QPointF &targetWp = waypoints[lookaheadIdx];
-        double dx = targetWp.x() - ai.x;
-        double dz = targetWp.y() - ai.z;
-        double desiredAngle = std::atan2(dz, dx);
-
-        if (ai.isInked) {
-            desiredAngle += std::sin(globalTime * 6.0 + ai.id * 2.0) * 0.12;
-        }
-
-        double deltaTheta = desiredAngle - ai.angle;
-        while (deltaTheta > M_PI) deltaTheta -= 2.0 * M_PI;
-        while (deltaTheta < -M_PI) deltaTheta += 2.0 * M_PI;
-
-        double turnStep = ai.turnRate * dt;
-        if (std::abs(deltaTheta) <= turnStep) {
-            ai.angle = desiredAngle;
-        } else if (deltaTheta > 0.0) {
-            ai.angle += turnStep;
-        } else {
-            ai.angle -= turnStep;
-        }
-        while (ai.angle >= 2.0 * M_PI) ai.angle -= 2.0 * M_PI;
-        while (ai.angle < 0.0) ai.angle += 2.0 * M_PI;
-
-        // 6. Cornering brake/feather throttle when |delta_theta| > 0.65 rad or approaching sharp corner
-        bool throttle = true;
-        bool brake = false;
-        double throttleScale = 1.0;
-        if (isSharpCornerAhead && distNext < 50.0 && ai.speed > 85.0) {
-            throttle = false;
-            brake = true;
-        } else if (std::abs(deltaTheta) > 0.65) {
-            if (ai.speed > 115.0) {
-                throttle = false;
-                brake = true;
-            } else {
-                throttle = true;
-                throttleScale = 0.65;
-            }
-        }
-
-        // 7. Terrain slowdown sampling trackMaskMap
-        double terrainSpeedMult = 1.0;
-        double terrainDragMult = 1.0;
-
-        if (isOnRoad) {
-            // White Road (Tarmac): 100% full speed
-            terrainSpeedMult = 1.0;
-            terrainDragMult = 1.0;
-        } else if (qRed(maskColor) == 255 && qGreen(maskColor) == 0 && qBlue(maskColor) == 255) {
-            // Magenta Molten Lava recoil: bounce towards track, spinout, lose speed
-            ai.speed *= 0.35;
-            double toRoadX = waypoints[nextWp].x() - ai.x;
-            double toRoadZ = waypoints[nextWp].y() - ai.z;
-            double roadDist = std::hypot(toRoadX, toRoadZ);
-            if (roadDist > 1.0) {
-                ai.x += (toRoadX / roadDist) * 12.0;
-                ai.z += (toRoadZ / roadDist) * 12.0;
-            } else {
-                ai.x -= std::cos(ai.angle) * 8.0;
-                ai.z -= std::sin(ai.angle) * 8.0;
-            }
-            ai.angle = std::atan2(waypoints[nextWp].y() - ai.z, waypoints[nextWp].x() - ai.x);
-            ai.isSpinning = true;
-            ai.spinTimer = 0.8;
+            if (ai.spinTimer <= 0.0) { ai.spinTimer = 0.0; ai.isSpinning = false; }
+            ai.angle += 10.0 * dt;
+            ai.speed = std::max(0.0, ai.speed - 120.0 * dt);
+            ai.x += ai.speed * std::cos(ai.angle) * dt;
+            ai.z += ai.speed * std::sin(ai.angle) * dt;
             continue;
-        } else if (qGreen(maskColor) == 255 && qRed(maskColor) == 0) {
-            // Green = shoulder (70% on Bowser Castle and Choco Valley sand, 45% grass)
-            terrainSpeedMult = (currentLevel == TrackLevel::DONUT_PLAINS) ? 0.45 : 0.70;
-            terrainDragMult = 2.0;
         }
 
-        // 8. Dynamic rubber-banding speed regulation
-        double distDelta = player1.totalRaceDistance - ai.totalRaceDistance;
-        double rubberBandMult = 1.0;
-        if (player1.totalRaceDistance > 50.0) {
-            if (distDelta > 150.0) {
-                double factor = std::clamp((distDelta - 150.0) / 400.0, 0.0, 1.0);
-                rubberBandMult = 1.10 + factor * 0.05; // +10% to +15%
-            } else if (distDelta < -150.0) {
-                double factor = std::clamp((-distDelta - 150.0) / 400.0, 0.0, 1.0);
-                rubberBandMult = 0.90 - factor * 0.02; // -10% to -12%
-            }
+        int wpIdx = std::clamp(ai.currentWaypointIndex, 0, static_cast<int>(currentWaypoints.size()) - 1);
+        const QPointF &wp = currentWaypoints[wpIdx];
+        if (std::hypot(wp.x() - ai.x, wp.y() - ai.z) < 65.0 && wpIdx + 1 < static_cast<int>(currentWaypoints.size())) {
+            wpIdx++;
+            ai.currentWaypointIndex = wpIdx;
+            ai.currentWaypoint = wpIdx;
         }
 
-        double effectiveMaxSpeed = ai.maxSpeed * rubberBandMult * terrainSpeedMult;
-        if (ai.isInked) {
-            effectiveMaxSpeed *= 0.65; // 35% speed reduction
-        }
+        int targetIdx = std::min(wpIdx + 1, static_cast<int>(currentWaypoints.size()) - 1);
+        QPointF targetPt = currentWaypoints[targetIdx];
 
-        // 9. Throttle acceleration / braking
-        if (throttle) {
-            double ratio = (effectiveMaxSpeed > 0.0) ? (ai.speed / effectiveMaxSpeed) : 0.0;
-            double accelEff = ai.accel * (1.0 - 0.25 * std::clamp(ratio, 0.0, 1.0)) * throttleScale;
-            ai.speed += accelEff * dt;
-            if (ai.speed > effectiveMaxSpeed) ai.speed = effectiveMaxSpeed;
-        } else if (brake) {
-            ai.speed -= ai.brakeDecel * dt;
-            if (ai.speed < 0.0) ai.speed = 0.0;
-        } else {
-            double drag = ai.friction * terrainDragMult;
-            ai.speed = std::max(0.0, ai.speed - drag * dt);
-        }
+        double lookX = ai.x + std::cos(ai.angle) * 90.0;
+        double lookZ = ai.z + std::sin(ai.angle) * 90.0;
+        double avoidOffset = hazardSystem.getHazardAvoidanceOffset(ai.x, ai.z, lookX, lookZ);
+        double perpX = -std::sin(ai.angle);
+        double perpZ =  std::cos(ai.angle);
+        double steerTargetX = targetPt.x() + perpX * avoidOffset * 26.0;
+        double steerTargetZ = targetPt.y() + perpZ * avoidOffset * 26.0;
 
-        // 10. Position update along heading
-        ai.x += ai.speed * std::cos(ai.angle) * dt;
-        ai.z += ai.speed * std::sin(ai.angle) * dt;
+        double desiredAngle = std::atan2(steerTargetZ - ai.z, steerTargetX - ai.x);
+        double angleDiff = desiredAngle - ai.angle;
+        while (angleDiff > M_PI)  angleDiff -= 2.0 * M_PI;
+        while (angleDiff < -M_PI) angleDiff += 2.0 * M_PI;
+
+        double maxTurn = ai.turnRate * dt;
+        ai.angle += std::clamp(angleDiff, -maxTurn, maxTurn);
+        ai.steerAngle = std::clamp(angleDiff * 2.0, -1.0, 1.0); // Used for 3-angle sprite leaning!
+
+        double turnSlowdown = (std::abs(angleDiff) > 0.6) ? 0.72 : 1.0;
+        double targetSpeed = ai.maxSpeed * stageSpeedScale * turnSlowdown;
+        if (ai.speed < targetSpeed) ai.speed = std::min(targetSpeed, ai.speed + ai.accel * dt);
+        else ai.speed = std::max(targetSpeed, ai.speed - 90.0 * dt);
+
+        ai.x = std::clamp(ai.x + ai.speed * std::cos(ai.angle) * dt, 16.0, static_cast<double>(TRACK_MAP_SIZE - 16));
+        ai.z = std::clamp(ai.z + ai.speed * std::sin(ai.angle) * dt, 16.0, static_cast<double>(TRACK_MAP_SIZE - 16));
+
+        ai.splineProgress = computeSplineProgress(ai.x, ai.z, &ai.progressMeters);
         ai.totalRaceDistance += ai.speed * dt;
 
-        while (ai.x < 0.0) ai.x += TRACK_MAP_SIZE;
-        while (ai.x >= TRACK_MAP_SIZE) ai.x -= TRACK_MAP_SIZE;
-        while (ai.z < 0.0) ai.z += TRACK_MAP_SIZE;
-        while (ai.z >= TRACK_MAP_SIZE) ai.z -= TRACK_MAP_SIZE;
-
-        // 11. Halfway checkpoint and lap progression
-        if (ai.z > 650.0) ai.hasPassedHalfway = true;
-        double trackZMin = (currentLevel == TrackLevel::BOWSER_CASTLE) ? 180.0 : 140.0;
-        double trackZMax = (currentLevel == TrackLevel::BOWSER_CASTLE) ? 320.0 : 260.0;
-        if (ai.x >= 508.0 && ai.x <= 516.0 && ai.z >= trackZMin && ai.z <= trackZMax && ai.hasPassedHalfway) {
-            ai.hasPassedHalfway = false;
-            ai.currentLap++;
-            if (ai.currentLap > 3) {
-                ai.raceFinished = true;
-            }
+        if (ai.splineProgress >= 0.985) {
+            ai.raceFinished = true;
+            ai.finishTime = raceElapsedTime;
         }
     }
 }
 
-// -------------------------------------------------------------
-// ITEM ROULETTE & POWERUP SYSTEM
-// -------------------------------------------------------------
-
-void GameCanvas::updateItemSystem(double dt)
+void GameCanvas::updateRankings()
 {
-    globalTime += dt;
+    std::vector<KartEntity*> all;
+    all.push_back(&player1);
+    for (auto &ai : aiOpponents) all.push_back(&ai);
+    for (auto &rk : remoteKarts) all.push_back(&rk);
 
-    // Item box respawn timers and banana immunity decay
+    std::sort(all.begin(), all.end(), [](const KartEntity *a, const KartEntity *b) {
+        if (a->raceFinished != b->raceFinished) return a->raceFinished;
+        if (a->raceFinished && b->raceFinished) {
+            if (a->isEliminated != b->isEliminated) return !a->isEliminated;
+            return a->finishTime < b->finishTime;
+        }
+        if (a->isEliminated != b->isEliminated) return !a->isEliminated;
+        return a->progressMeters > b->progressMeters;
+    });
+
+    for (size_t i = 0; i < all.size(); ++i) {
+        all[i]->placement = static_cast<int>(i + 1);
+    }
+    playerPlacement = player1.placement;
+}
+
+void GameCanvas::updateGearSystem(double dt)
+{
     for (auto &sprite : worldSprites) {
         if (!sprite.active && sprite.respawnTimer > 0.0) {
             sprite.respawnTimer -= dt;
             if (sprite.respawnTimer <= 0.0) {
-                sprite.active = true;
                 sprite.respawnTimer = 0.0;
+                sprite.active = true;
             }
-        }
-        if (sprite.active && sprite.immunityTimer > 0.0) {
-            sprite.immunityTimer = std::max(0.0, sprite.immunityTimer - dt);
         }
     }
+}
 
-    // Dynamic projectile physics & collision
-    for (auto &shell : activeProjectiles) {
-        if (!shell.active) continue;
+void GameCanvas::useHeldGear()
+{
+    if (heldGear == SurvivalGear::NONE) return;
+    SurvivalGear g = heldGear;
+    heldGear = SurvivalGear::NONE;
 
-        shell.x += shell.vx * dt;
-        shell.z += shell.vz * dt;
-        shell.lifeTime -= dt;
+    if (g == SurvivalGear::NITROUS) {
+        nitrousFuel = nitrousMaxFuel;
+        nitrousBoostTimer = 2.5 * (1.0 + GarageSystem::instance().upgrades().nitrousLevel * 0.15);
+    } else if (g == SurvivalGear::REPAIR_KIT) {
+        double heal = (player1.vehicleId == 3) ? 35.0 : 25.0;
+        playerHull.repair(heal);
+        playerHull.isOnFire = false;
+    } else if (g == SurvivalGear::DOZER_RAM) {
+        dozerRamTimer = 4.5;
+        flashIntensity = 0.25;
+    } else if (g == SurvivalGear::SHOCKWAVE_FLARE) {
+        Projectile p;
+        p.x = kartX + std::cos(kartAngle) * 14.0;
+        p.z = kartZ + std::sin(kartAngle) * 14.0;
+        p.vx = std::cos(kartAngle) * (std::max(140.0, kartSpeed) + 120.0);
+        p.vz = std::sin(kartAngle) * (std::max(140.0, kartSpeed) + 120.0);
+        p.ownerId = 0;
+        p.lifeTime = 3.0;
+        p.active = true;
+        activeProjectiles.push_back(p);
+    }
+}
 
-        if (shell.lifeTime <= 0.0) {
-            shell.active = false;
-            continue;
-        }
+void GameCanvas::updateProjectiles(double dt)
+{
+    for (auto &p : activeProjectiles) {
+        if (!p.active) continue;
+        p.lifeTime -= dt;
+        if (p.lifeTime <= 0.0) { p.active = false; continue; }
+        p.x += p.vx * dt;
+        p.z += p.vz * dt;
 
-        // Boundary bounce off walls [20.0, 1004.0]
-        bool bounced = false;
-        if (shell.x < 20.0) {
-            shell.x = 20.0;
-            shell.vx = -shell.vx;
-            bounced = true;
-        } else if (shell.x > 1004.0) {
-            shell.x = 1004.0;
-            shell.vx = -shell.vx;
-            bounced = true;
-        }
-        if (shell.z < 20.0) {
-            shell.z = 20.0;
-            shell.vz = -shell.vz;
-            bounced = true;
-        } else if (shell.z > 1004.0) {
-            shell.z = 1004.0;
-            shell.vz = -shell.vz;
-            bounced = true;
-        }
-
-        if (bounced) {
-            shell.bouncesLeft--;
-            if (shell.bouncesLeft <= 0) {
-                shell.active = false;
-                continue;
-            }
-        }
-
-        // Check collision with AI opponents (radius 16.0)
-        for (auto &ai : aiOpponents) {
-            if (shell.ownerId == ai.id && shell.bouncesLeft == 3) continue;
-
-            double dx = ai.x - shell.x;
-            double dz = ai.z - shell.z;
-            if (dx * dx + dz * dz < 16.0 * 16.0) {
-                shell.active = false;
-                ai.isSpinning = true;
-                ai.spinTimer = 1.2;
-                ai.speed *= 0.35;
+        for (auto &sprite : worldSprites) {
+            if (!sprite.active || !SpriteAtlas::instance().isObstacle(sprite.type)) continue;
+            if (std::hypot(p.x - sprite.x, p.z - sprite.z) < 22.0) {
+                sprite.active = false;
+                p.active = false;
+                for (int i = 0; i < 10; ++i) {
+                    spawnWorldParticle(p.x, 3.0, p.z, ((rand() % 40) - 20), 12.0, ((rand() % 40) - 20),
+                                       0.5, 4.0, qRgb(255, 160, 40), WorldParticleKind::EMBER);
+                }
                 break;
             }
         }
-
-        // Check collision with Player 1 (if shell has bounced or was fired by opponent)
-        if (shell.active && !(shell.ownerId == 0 && shell.bouncesLeft == 3)) {
-            double dx = kartX - shell.x;
-            double dz = kartZ - shell.z;
-            if (dx * dx + dz * dz < 14.0 * 14.0) {
-                shell.active = false;
-                isSpinning = true;
-                spinTimer = 1.0;
-                kartSpeed *= 0.35;
+        for (auto &ai : aiOpponents) {
+            if (!ai.isSpinning && std::hypot(p.x - ai.x, p.z - ai.z) < 18.0) {
+                ai.isSpinning = true;
+                ai.spinTimer = 1.0;
+                p.active = false;
+                break;
             }
         }
     }
-
     activeProjectiles.erase(
         std::remove_if(activeProjectiles.begin(), activeProjectiles.end(),
                        [](const Projectile &p) { return !p.active; }),
         activeProjectiles.end());
+}
 
-    // Status effect countdowns
-    if (mushroomBoostTimer > 0.0) {
-        mushroomBoostTimer = std::max(0.0, mushroomBoostTimer - dt);
+void GameCanvas::updateDriftSparks(double dt)
+{
+    for (auto it = driftSparks.begin(); it != driftSparks.end();) {
+        it->x += it->vx * dt;
+        it->y += it->vy * dt;
+        it->vy += 120.0 * dt;
+        it->life -= dt;
+        if (it->life <= 0.0) it = driftSparks.erase(it);
+        else ++it;
     }
 
-    if (isSpinning) {
-        spinTimer -= dt;
-        if (spinTimer <= 0.0) {
-            isSpinning = false;
-        }
-    }
-
-    if (inkTimer > 0.0) {
-        inkTimer = std::max(0.0, inkTimer - dt);
-    }
-
-    // Item Roulette Animation
-    if (isRouletteActive) {
-        rouletteTimer += dt;
-        // Fast cycling animation through all items
-        rouletteIndex = static_cast<int>(rouletteTimer * 14.0) % 5;
-
-        if (rouletteTimer >= rouletteDuration) {
-            isRouletteActive = false;
-            // Land precisely on the truly randomized item
-            heldItem = spriteToPlayerItem(rouletteItemAt(targetItemIndex));
+    if (isDrifting && driftSparks.size() < 45) {
+        QRgb sparkCol = (driftTimer >= 0.85) ? qRgb(255, 140, 20) : qRgb(190, 200, 215);
+        for (int i = 0; i < 2; ++i) {
+            SparkParticle sp;
+            sp.x = (BUFFER_WIDTH / 2) + ((i == 0) ? -45.0 : 45.0) + (rand() % 12 - 6);
+            sp.y = BUFFER_HEIGHT - 12 - (rand() % 6);
+            sp.vx = -driftDirection * (35.0 + (rand() % 45));
+            sp.vy = -(22.0 + (rand() % 35));
+            sp.maxLife = 0.28;
+            sp.life = sp.maxLife;
+            sp.color = sparkCol;
+            driftSparks.push_back(sp);
         }
     }
 }
 
-void GameCanvas::startItemRoulette()
+void GameCanvas::spawnWorldParticle(double x, double y, double z, double vx, double vy, double vz,
+                                    double life, double size, QRgb color, WorldParticleKind kind)
 {
-    if (isRouletteActive || heldItem != PlayerItem::NONE) return;
-    isRouletteActive = true;
-    rouletteTimer = 0.0;
-    rouletteDuration = 1.8;
-    // Pick uniformly at random from all 5 powerups:
-    // 0: Mushroom, 1: Rocket, 2: Banana, 3: Green Shell, 4: Ink Blooper
-    targetItemIndex = QRandomGenerator::global()->bounded(5);
-    rouletteIndex = QRandomGenerator::global()->bounded(5);
-    heldItem = PlayerItem::NONE;
+    if (worldParticles.size() >= 140) return;
+    WorldParticle wp;
+    wp.x = x; wp.y = y; wp.z = z;
+    wp.vx = vx; wp.vy = vy; wp.vz = vz;
+    wp.life = life; wp.maxLife = life;
+    wp.baseSize = size;
+    wp.color = color;
+    wp.kind = kind;
+    worldParticles.push_back(wp);
 }
 
-void GameCanvas::useHeldItem()
+void GameCanvas::updateWorldParticles(double dt)
 {
-    if (isRouletteActive || heldItem == PlayerItem::NONE) return;
-
-    switch (heldItem) {
-    case PlayerItem::MUSHROOM:
-        mushroomBoostTimer = 3.0;
-        kartSpeed = std::max(kartSpeed, maxSpeed * 1.4);
-        break;
-
-    case PlayerItem::ROCKET:
-        mushroomBoostTimer = 4.5;
-        kartSpeed = maxSpeed * 1.65;
-        break;
-
-    case PlayerItem::BANANA: {
-        // Drop a banana peel behind the player's kart with owner immunity window
-        double dropDist = 16.0;
-        double bx = kartX - std::cos(kartAngle) * dropDist;
-        double bz = kartZ - std::sin(kartAngle) * dropDist;
-        worldSprites.push_back({ bx, bz, 0.0, SpriteType::BANANA_DROPPED, true, 0.0, 0, 1.2 });
-        if (isNetworkRace && networkManager) {
-            networkManager->sendItemEvent(static_cast<int>(SpriteType::BANANA_DROPPED), bx, bz, kartAngle);
+    // Emit rising smoke & embers from nearby burning hazards
+    for (const auto &hz : hazardSystem.getTrackHazards()) {
+        if (hz.type == HazardType::BURNING_TAXI || hz.type == HazardType::BURNING_AUTO ||
+            (hz.type == HazardType::GAS_VENT && hz.isErupting)) {
+            if (std::hypot(hz.x - kartX, hz.z - kartZ) < 420.0 && (rand() % 4 == 0)) {
+                bool isEmber = (rand() % 3 == 0);
+                spawnWorldParticle(hz.x + ((rand() % 10) - 5), 10.0, hz.z + ((rand() % 10) - 5),
+                                   ((rand() % 12) - 6), 14.0 + (rand() % 12), ((rand() % 12) - 6),
+                                   isEmber ? 0.75 : 1.35, isEmber ? 2.5 : 7.0,
+                                   isEmber ? qRgb(255, 165, 35) : qRgb(42, 40, 40),
+                                   isEmber ? WorldParticleKind::EMBER : WorldParticleKind::SMOKE);
+            }
         }
-        break;
     }
 
-    case PlayerItem::GREEN_SHELL: {
-        // Fire green shell forward as active dynamic projectile
-        double fireDist = 14.0;
-        double fx = kartX + std::cos(kartAngle) * fireDist;
-        double fz = kartZ + std::sin(kartAngle) * fireDist;
-        double launchSpeed = std::max(180.0, kartSpeed + 75.0);
-        Projectile shell;
-        shell.x = fx;
-        shell.z = fz;
-        shell.vx = std::cos(kartAngle) * launchSpeed;
-        shell.vz = std::sin(kartAngle) * launchSpeed;
-        shell.ownerId = 0;
-        shell.active = true;
-        shell.lifeTime = 6.0;
-        shell.bouncesLeft = 3;
-        activeProjectiles.push_back(shell);
-        if (isNetworkRace && networkManager) {
-            networkManager->sendItemEvent(static_cast<int>(SpriteType::SHELL_PROJECTILE), fx, fz, kartAngle);
+    for (auto it = worldParticles.begin(); it != worldParticles.end();) {
+        it->life -= dt;
+        if (it->life <= 0.0) {
+            it = worldParticles.erase(it);
+            continue;
         }
-        break;
-    }
-
-    case PlayerItem::INK_BLOOPER:
-        inkTimer = 0.0; // Player 1 windshield remains 100% clean
-        player1.isInked = false;
-        player1.inkTimer = 0.0;
-        for (auto &ai : aiOpponents) {
-            ai.isInked = true;
-            ai.inkTimer = 4.0;
-            ai.speed *= 0.65;
-        }
-        if (selectedGameMode == GameMode::MULTIPLAYER) {
-            player2.isInked = true;
-            player2.inkTimer = 4.0;
-            player2.speed *= 0.65;
-        }
-        if (isNetworkRace && networkManager) {
-            networkManager->sendItemEvent(static_cast<int>(SpriteType::INK_BLOOPER), kartX, kartZ, kartAngle);
-        }
-        flashIntensity = 0.35;
-        break;
-
-    default:
-        break;
-    }
-
-    heldItem = PlayerItem::NONE;
-}
-
-SpriteType GameCanvas::rouletteItemAt(int index) const
-{
-    switch ((index % 5 + 5) % 5) {
-    case 0: return SpriteType::MUSHROOM;
-    case 1: return SpriteType::ROCKET;
-    case 2: return SpriteType::BANANA;
-    case 3: return SpriteType::GREEN_SHELL;
-    case 4: return SpriteType::INK_BLOOPER;
-    default: return SpriteType::MUSHROOM;
-    }
-}
-
-PlayerItem GameCanvas::spriteToPlayerItem(SpriteType type) const
-{
-    switch (type) {
-    case SpriteType::MUSHROOM: return PlayerItem::MUSHROOM;
-    case SpriteType::ROCKET: return PlayerItem::ROCKET;
-    case SpriteType::BANANA: return PlayerItem::BANANA;
-    case SpriteType::GREEN_SHELL: return PlayerItem::GREEN_SHELL;
-    case SpriteType::INK_BLOOPER: return PlayerItem::INK_BLOOPER;
-    default: return PlayerItem::NONE;
+        it->x += it->vx * dt;
+        it->y += it->vy * dt;
+        it->z += it->vz * dt;
+        if (it->kind == WorldParticleKind::SPARK) it->vy -= 40.0 * dt;
+        ++it;
     }
 }
 
 // -------------------------------------------------------------
-// RENDER PASSES
+// ANIMATED PIXEL-ART BOOT STORY CUTSCENE (4 SCENES)
 // -------------------------------------------------------------
+
+void GameCanvas::renderStoryIntro()
+{
+    QPainter painter(&screenBuffer);
+    painter.setRenderHint(QPainter::Antialiasing, false);
+
+    double t = storyTimer;
+    int scene = (t < 5.5) ? 0 : (t < 11.5 ? 1 : (t < 17.5 ? 2 : 3));
+
+    // Base dark sky
+    QColor skyTop(5, 5, 10);
+    QColor skyBot = (scene == 0) ? QColor(14, 18, 32)
+                  : (scene == 1 ? QColor(32, 14, 16) : QColor(52, 16, 8));
+    QLinearGradient sg(0, 0, 0, 210);
+    sg.setColorAt(0.0, skyTop);
+    sg.setColorAt(1.0, skyBot);
+    painter.fillRect(0, 0, BUFFER_WIDTH, 210, sg);
+
+    // Subtle seismic shake in scenes 1 & 2
+    int sx = 0, sy = 0;
+    if (scene == 1 || scene == 2) {
+        double amp = (scene == 1) ? 2.5 : 4.0;
+        sx = static_cast<int>(std::sin(t * 38.0) * amp);
+        sy = static_cast<int>(std::cos(t * 45.0) * amp * 0.6);
+    }
+
+    painter.save();
+    painter.translate(sx, sy);
+
+    // Distant Kolkata skyline silhouettes
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(10, 10, 14));
+    painter.drawRect(30, 110, 18, 100);   // The 42
+    painter.drawRect(80, 145, 45, 65);
+    painter.drawRect(160, 130, 28, 80);   // Victoria Memorial base
+    painter.drawEllipse(156, 114, 36, 30);
+    painter.drawRect(240, 150, 55, 60);
+    painter.drawRect(320, 118, 10, 92);   // Howrah tower L
+    painter.drawRect(365, 118, 10, 92);   // Howrah tower R
+
+    // Scene 0: Calm pre-fault Gariahat night (lights snapping, taxi cruising)
+    if (scene == 0) {
+        // City lights grid (all lit)
+        for (int bx = 86; bx < 290; bx += 12) {
+            for (int by = 152; by < 195; by += 10) {
+                if ((bx + by) % 3 == 0) painter.fillRect(bx, by, 4, 4, QColor(245, 185, 65));
+            }
+        }
+        // Road & sodium streetlamps
+        painter.fillRect(0, 200, BUFFER_WIDTH, 35, QColor(24, 24, 28));
+        for (int lx = 20; lx < BUFFER_WIDTH; lx += 85) {
+            painter.fillRect(lx, 155, 3, 45, QColor(45, 45, 50));
+            painter.fillRect(lx - 2, 153, 8, 3, QColor(255, 190, 50));
+        }
+        // Moving Kaali-Peeli taxi silhouette
+        int tx = static_cast<int>(std::fmod(t * 55.0, 440.0)) - 40;
+        painter.fillRect(tx, 192, 34, 11, QColor(235, 185, 20));
+        painter.fillRect(tx + 7, 185, 20, 7, QColor(22, 22, 24));
+        painter.setBrush(QColor(255, 235, 150, 90));
+        QPolygon cone;
+        cone << QPoint(tx + 34, 196) << QPoint(tx + 95, 184) << QPoint(tx + 95, 208);
+        painter.drawPolygon(cone);
+    }
+    // Scene 1: Subsidence fault tears open, grid blacks out block by block, lightning!
+    else if (scene == 1) {
+        double p = (t - 5.5) / 6.0;
+        int blackoutX = static_cast<int>(p * BUFFER_WIDTH);
+        for (int bx = 86; bx < 290; bx += 12) {
+            for (int by = 152; by < 195; by += 10) {
+                if (bx > blackoutX && (bx + by) % 3 == 0) {
+                    painter.fillRect(bx, by, 4, 4, QColor(245, 185, 65));
+                }
+            }
+        }
+        // Branching lightning arc
+        if (static_cast<int>(t * 10.0) % 4 == 0) {
+            painter.setPen(QPen(QColor(210, 235, 255), 2));
+            painter.drawLine(190, 0, 175, 55);
+            painter.drawLine(175, 55, 205, 105);
+            painter.drawLine(205, 105, 185, 150);
+        }
+        // Cracking road fissure
+        painter.fillRect(0, 200, BUFFER_WIDTH, 35, QColor(22, 20, 22));
+        painter.setPen(QPen(QColor(255, 110, 25), 2));
+        int crackLen = static_cast<int>(p * 180);
+        painter.drawLine(200 - crackLen, 215, 200, 210);
+        painter.drawLine(200, 210, 200 + crackLen, 222);
+    }
+    // Scene 2: Gariahat Flyover collapses & fire plumes erupt
+    else if (scene == 2) {
+        double p = (t - 11.5) / 6.0;
+        // Flyover deck snapping & dropping
+        int dropY = static_cast<int>(std::min(1.0, p * 1.4) * 58.0);
+        painter.fillRect(30, 138, 120, 10, QColor(70, 68, 66));
+        painter.save();
+        painter.translate(150, 142 + dropY);
+        painter.rotate(std::min(28.0, p * 42.0));
+        painter.fillRect(0, -5, 140, 12, QColor(85, 80, 75));
+        painter.restore();
+
+        // Fire plumes & rising smoke
+        for (int i = 0; i < 14; ++i) {
+            int fx = 110 + (i * 17) % 190;
+            int fy = 178 - static_cast<int>(std::fmod(t * 35.0 + i * 19.0, 55.0));
+            painter.setBrush((i % 2 == 0) ? QColor(255, 125, 25, 190) : QColor(45, 42, 40, 170));
+            painter.drawEllipse(fx, fy, 14, 14);
+        }
+        painter.fillRect(0, 200, BUFFER_WIDTH, 35, QColor(24, 16, 14));
+    }
+    // Scene 3: Garage shutter rolls up, Arjun's rig headlights flare on
+    else {
+        double p = (t - 17.5) / 4.5;
+        painter.fillRect(0, 200, BUFFER_WIDTH, 35, QColor(24, 16, 14));
+        // Garage bay frame & rising corrugated shutter
+        int shutterH = static_cast<int>(std::max(0.0, 1.0 - p * 1.5) * 95.0);
+        painter.fillRect(110, 110, 180, 95, QColor(14, 12, 16));
+        // Headlights shining out from inside bay
+        if (p > 0.25) {
+            painter.setBrush(QColor(255, 225, 135, 170));
+            painter.drawEllipse(152, 176, 16, 12);
+            painter.drawEllipse(232, 176, 16, 12);
+            QPolygon beamL, beamR;
+            beamL << QPoint(160, 182) << QPoint(90, 235) << QPoint(185, 235);
+            beamR << QPoint(240, 182) << QPoint(215, 235) << QPoint(310, 235);
+            painter.setBrush(QColor(255, 215, 110, 55));
+            painter.drawPolygon(beamL);
+            painter.drawPolygon(beamR);
+        }
+        painter.fillRect(110, 110, 180, shutterH, QColor(58, 56, 62));
+        for (int y = 114; y < 110 + shutterH; y += 8) {
+            painter.fillRect(110, y, 180, 2, QColor(36, 34, 38));
+        }
+    }
+
+    painter.restore();
+
+    // Bottom FM Radio Subtitle Box with Typewriter Caption
+    painter.fillRect(0, 235, BUFFER_WIDTH, 65, QColor(8, 7, 10, 245));
+    painter.setPen(QPen(QColor(225, 130, 25), 1));
+    painter.drawLine(0, 235, BUFFER_WIDTH, 235);
+
+    QString header, fullLine;
+    double localT = 0.0;
+    if (scene == 0) {
+        header = "02:39 IST — GARIAHAT CROSSING";
+        fullLine = "Power grid steady. Arjun Sen's night shift ends—until the alluvial clay beneath Kolkata shifts.";
+        localT = t;
+    } else if (scene == 1) {
+        header = "02:40 IST — BLACKOUT OVER THE HOOGHLY";
+        fullLine = "Subsidence fault ruptures! Substation arcs tear across Chowringhee as the city plunges dark.";
+        localT = t - 5.5;
+    } else if (scene == 2) {
+        header = "FM EMERGENCY RELAY — STRUCTURAL FAILURE";
+        fullLine = "Gariahat Flyover has sheared! Reach Howrah Bridge before the main cantilever collapses.";
+        localT = t - 11.5;
+    } else {
+        header = "GARAGE BAY 4 — IGNITION";
+        fullLine = "No choppers left in the ash storm. Weld the bull-bar, hit the gas, and survive the ruins.";
+        localT = t - 17.5;
+    }
+
+    int chars = std::min(static_cast<int>(fullLine.length()), static_cast<int>(localT * 34.0));
+    painter.setFont(QFont("Courier New", 7, QFont::Bold));
+    painter.setPen(QColor(245, 165, 35));
+    painter.drawText(QRect(14, 240, BUFFER_WIDTH - 28, 14), Qt::AlignLeft, header);
+
+    painter.setFont(QFont("Arial", 7, QFont::Bold));
+    painter.setPen(QColor(225, 222, 218));
+    painter.drawText(QRect(14, 256, BUFFER_WIDTH - 28, 28), Qt::AlignLeft | Qt::TextWordWrap, fullLine.left(chars));
+
+    painter.setFont(QFont("Arial", 5, QFont::Bold));
+    painter.setPen(QColor(150, 145, 140));
+    painter.drawText(QRect(14, 286, BUFFER_WIDTH - 28, 10), Qt::AlignRight, "[SPACE / ENTER] SKIP INTRO");
+}
+
+// -------------------------------------------------------------
+// ANIMATED SKYBOX, MODE-7 GROUND, FIRELIGHT & 3D PARTICLES
+// -------------------------------------------------------------
+
+SpriteType GameCanvas::getVehicleSpriteType(int vehicleId, bool isAlt) const
+{
+    switch (vehicleId) {
+    case 0: return isAlt ? SpriteType::RIG_KAALI_PEELI_ALT : SpriteType::RIG_KAALI_PEELI;
+    case 1: return isAlt ? SpriteType::RIG_DOZER_ALT       : SpriteType::RIG_DOZER;
+    case 2: return isAlt ? SpriteType::RIG_RUNNER_ALT      : SpriteType::RIG_RUNNER;
+    case 3: return isAlt ? SpriteType::RIG_MEDVAN_ALT      : SpriteType::RIG_MEDVAN;
+    default: return isAlt ? SpriteType::RIG_KAALI_PEELI_ALT : SpriteType::RIG_KAALI_PEELI;
+    }
+}
 
 void GameCanvas::renderSky()
 {
     QRgb *pixels = reinterpret_cast<QRgb*>(screenBuffer.bits());
+    int effHorizon = std::clamp(HORIZON_Y + static_cast<int>(horizonPitchOffset + cameraShakeY * 0.5), 90, 210);
 
-    QColor topSkyColor, bottomSkyColor;
-    if (currentLevel == TrackLevel::DONUT_PLAINS) {
-        topSkyColor = QColor(40, 110, 240);
-        bottomSkyColor = QColor(160, 210, 255);
-    } else if (currentLevel == TrackLevel::CHOCO_VALLEY) {
-        topSkyColor = QColor(180, 70, 30);
-        bottomSkyColor = QColor(240, 180, 110);
+    QColor topSky, botSky;
+    if (currentStage == KolkataStage::GARIAHAT_COLLAPSE) {
+        topSky = QColor(5, 4, 8);
+        botSky = QColor(46, 15, 10);
+    } else if (currentStage == KolkataStage::PARK_STREET_RUINS) {
+        topSky = QColor(7, 4, 8);
+        botSky = QColor(62, 18, 9);
     } else {
-        topSkyColor = QColor(20, 5, 20);
-        bottomSkyColor = QColor(140, 30, 10);
+        topSky = QColor(4, 3, 6);
+        botSky = QColor(78, 20, 8);
     }
 
-    for (int y = 0; y < HORIZON_Y; ++y) {
-        double factor = static_cast<double>(y) / HORIZON_Y;
-        int r = topSkyColor.red() + factor * (bottomSkyColor.red() - topSkyColor.red());
-        int g = topSkyColor.green() + factor * (bottomSkyColor.green() - topSkyColor.green());
-        int b = topSkyColor.blue() + factor * (bottomSkyColor.blue() - topSkyColor.blue());
-        QRgb skyLineColor = qRgb(r, g, b);
+    int flashBoost = static_cast<int>(lightningFlashTimer * 260.0);
+
+    // 1. Sky gradient + scrolling parallax storm cloud bands
+    int cloudDrift = static_cast<int>(globalTime * 12.0);
+    int horizonOffset = static_cast<int>((kartAngle / (2.0 * M_PI)) * BUFFER_WIDTH * 2.0);
+
+    for (int y = 0; y < effHorizon; ++y) {
+        double factor = static_cast<double>(y) / std::max(1, effHorizon);
+        double glow = factor * factor;
+        int baseR = static_cast<int>(topSky.red()   + glow * (botSky.red()   - topSky.red()))   + flashBoost;
+        int baseG = static_cast<int>(topSky.green() + glow * (botSky.green() - topSky.green())) + flashBoost;
+        int baseB = static_cast<int>(topSky.blue()  + glow * (botSky.blue()  - topSky.blue()))  + flashBoost;
 
         for (int x = 0; x < BUFFER_WIDTH; ++x) {
-            pixels[y * BUFFER_WIDTH + x] = skyLineColor;
+            int cx = (x + horizonOffset / 2 + cloudDrift) % BUFFER_WIDTH;
+            double cloud = std::sin(cx * 0.035 + y * 0.08) * std::cos(cx * 0.018 - y * 0.04);
+            int cloudShade = (y < effHorizon - 22 && cloud > 0.25) ? 14 : 0;
+
+            int r = std::clamp(baseR + cloudShade, 0, 255);
+            int g = std::clamp(baseG + cloudShade / 2, 0, 255);
+            int b = std::clamp(baseB + cloudShade / 2, 0, 255);
+            pixels[y * BUFFER_WIDTH + x] = qRgb(r, g, b);
         }
     }
 
-    // Parallax Mountain / Cloud Silhouette
-    int horizonOffset = static_cast<int>((kartAngle / (2.0 * M_PI)) * BUFFER_WIDTH * 2.0);
+    // 2. Sweeping Evacuation Searchlights in sky
+    double beamAngle1 = std::sin(globalTime * 1.1) * 0.65;
+    double beamAngle2 = std::cos(globalTime * 0.85) * 0.55;
+    auto drawBeam = [&](int originX, double slope) {
+        for (int y = 0; y < effHorizon; ++y) {
+            int distFromBot = effHorizon - y;
+            int centerX = originX + static_cast<int>(distFromBot * slope);
+            int halfW = 2 + distFromBot / 14;
+            for (int x = std::max(0, centerX - halfW); x <= std::min(BUFFER_WIDTH - 1, centerX + halfW); ++x) {
+                QRgb c = pixels[y * BUFFER_WIDTH + x];
+                pixels[y * BUFFER_WIDTH + x] = qRgb(std::min(255, qRed(c) + 18),
+                                                    std::min(255, qGreen(c) + 18),
+                                                    std::min(255, qBlue(c) + 22));
+            }
+        }
+    };
+    drawBeam((320 - horizonOffset % BUFFER_WIDTH + BUFFER_WIDTH) % BUFFER_WIDTH, beamAngle1);
+    drawBeam((140 - horizonOffset % BUFFER_WIDTH + BUFFER_WIDTH) % BUFFER_WIDTH, beamAngle2);
+
+    // 3. Branching lightning bolt during flashes
+    if (lightningFlashTimer > 0.08) {
+        QPainter lp(&screenBuffer);
+        lp.setPen(QPen(QColor(225, 240, 255, 230), 2));
+        int lx = 120 + (static_cast<int>(globalTime * 100.0) % 160);
+        lp.drawLine(lx, 0, lx - 14, 38);
+        lp.drawLine(lx - 14, 38, lx + 12, 78);
+        lp.drawLine(lx + 12, 78, lx - 6, effHorizon - 20);
+    }
+
+    // 4. Parallax ruined Kolkata skyline silhouette (with scanline banking roll!)
+    QRgb silColor  = qRgb(13, 10, 12);
+    QRgb firePixel = qRgb(225, 90, 20);
+
     for (int x = 0; x < BUFFER_WIDTH; ++x) {
-        int sampleX = (x + horizonOffset) % BUFFER_WIDTH;
-        int mountainHeight = static_cast<int>(18.0 * std::sin(sampleX * 0.05) + 8.0 * std::sin(sampleX * 0.12));
-        int peakY = HORIZON_Y - 15 - mountainHeight;
-        peakY = std::clamp(peakY, 0, HORIZON_Y - 1);
+        int rollShift = static_cast<int>(bodyRoll * (x - BUFFER_WIDTH / 2) * 0.9);
+        int sx = ((x + horizonOffset) % BUFFER_WIDTH + BUFFER_WIDTH) % BUFFER_WIDTH;
+        int h = 10 + static_cast<int>(8.0 * std::sin(sx * 0.04) + 5.0 * std::cos(sx * 0.11));
 
-        QRgb mtnColor = (currentLevel == TrackLevel::BOWSER_CASTLE)
-                            ? qRgb(50, 15, 15)
-                            : (currentLevel == TrackLevel::CHOCO_VALLEY ? qRgb(110, 55, 20) : qRgb(20, 80, 30));
+        if (sx >= 60 && sx <= 76) h = 44;              // Broken The 42 tower
+        else if (sx >= 150 && sx <= 160) h = 36;       // Shaheed Minar spire
+        else if (sx >= 210 && sx <= 250) {             // Victoria Memorial dome
+            int dx = sx - 230;
+            h = 18 + static_cast<int>(std::sqrt(std::max(0, 400 - dx * dx)) * 0.6);
+        } else if (sx >= 300 && sx <= 370) {           // Howrah Bridge twin towers
+            if ((sx >= 310 && sx <= 318) || (sx >= 352 && sx <= 360)) h = 42;
+            else h = 22 + ((sx % 6 == 0) ? 4 : 0);
+        }
 
-        for (int y = peakY; y < HORIZON_Y; ++y) {
-            pixels[y * BUFFER_WIDTH + x] = mtnColor;
+        int peakY = std::clamp(effHorizon + rollShift - h, 0, effHorizon - 1);
+        int baseY = std::clamp(effHorizon + rollShift, 0, BUFFER_HEIGHT - 1);
+        for (int y = peakY; y < baseY; ++y) {
+            pixels[y * BUFFER_WIDTH + x] = silColor;
+        }
+        if (h > 18 && (sx % 15 == 0) && ((static_cast<int>(globalTime * 9.0) + sx) % 3 != 0)) {
+            int wy = std::clamp(effHorizon + rollShift - h / 2, 0, BUFFER_HEIGHT - 1);
+            pixels[wy * BUFFER_WIDTH + x] = firePixel;
         }
     }
 }
@@ -1796,28 +1907,98 @@ void GameCanvas::renderGroundMode7()
 
     double cosA = std::cos(kartAngle);
     double sinA = std::sin(kartAngle);
-    double effectiveCamHeight = cameraHeight + driftHopHeight * 0.6;
+    int effHorizon = std::clamp(HORIZON_Y + static_cast<int>(horizonPitchOffset + cameraShakeY * 0.5), 90, 210);
+    double effFocal = focalLength + ((nitrousActive || nitrousBoostTimer > 0.0) ? 24.0 : 0.0);
 
-    for (int y = HORIZON_Y; y < BUFFER_HEIGHT; ++y) {
-        int dy = y - HORIZON_Y;
+    // Gather up to 8 closest burning fire light sources for real-time dynamic ground illumination
+    struct FireLight { double x, z, radiusSq; double intensity; };
+    FireLight lights[8];
+    int numLights = 0;
+    double flicker = 0.85 + 0.15 * std::sin(globalTime * 22.0);
+    for (const auto &hz : hazardSystem.getTrackHazards()) {
+        if (numLights >= 8) break;
+        if (hz.type == HazardType::BURNING_TAXI || hz.type == HazardType::BURNING_AUTO ||
+            (hz.type == HazardType::GAS_VENT && hz.isErupting)) {
+            if (std::hypot(hz.x - kartX, hz.z - kartZ) < 360.0) {
+                lights[numLights++] = { hz.x, hz.z, 75.0 * 75.0, (hz.type == HazardType::GAS_VENT ? 1.3 : 1.0) * flicker };
+            }
+        }
+    }
+
+    constexpr int FOG_R = 13, FOG_G = 9, FOG_B = 10;
+
+    for (int y = effHorizon; y < BUFFER_HEIGHT; ++y) {
+        int dy = y - effHorizon;
         if (dy == 0) dy = 1;
 
-        // Similar triangles perspective: Distance to ground row
-        double zGround = (effectiveCamHeight * focalLength) / dy;
-        double scaleGround = effectiveCamHeight / dy;
+        double zGround = (cameraHeight * effFocal) / dy;
+        double scaleGround = cameraHeight / dy;
+        double fog = std::clamp((zGround - 40.0) / 360.0, 0.0, 0.93);
+        double invFog = 1.0 - fog;
+
+        // Horizontal hit-shockwave ripple
+        int rippleShift = (hitRippleTimer > 0.0)
+            ? static_cast<int>(std::sin(y * 0.35 + globalTime * 45.0) * hitRippleTimer * 8.0) : 0;
 
         for (int x = 0; x < BUFFER_WIDTH; ++x) {
-            int dx = x - (BUFFER_WIDTH / 2);
-            double xGround = dx * scaleGround;
+            int dx = x - (BUFFER_WIDTH / 2) + static_cast<int>(cameraShakeX * 0.4) + rippleShift;
+            // Subtle banking tilt per column
+            int bankedDy = std::max(1, dy - static_cast<int>(bodyRoll * dx * 0.4));
+            double zRow = (bankedDy == dy) ? zGround : ((cameraHeight * effFocal) / bankedDy);
+            double sRow = (bankedDy == dy) ? scaleGround : (cameraHeight / bankedDy);
 
-            // Rotate ground offset by kart angle & translate by kart position
-            double u = kartX - xGround * sinA + zGround * cosA;
-            double v = kartZ + xGround * cosA + zGround * sinA;
+            double xGround = dx * sRow;
+            double u = kartX - xGround * sinA + zRow * cosA;
+            double v = kartZ + xGround * cosA + zRow * sinA;
 
-            int mapU = (static_cast<int>(u) % TRACK_MAP_SIZE + TRACK_MAP_SIZE) % TRACK_MAP_SIZE;
-            int mapV = (static_cast<int>(v) % TRACK_MAP_SIZE + TRACK_MAP_SIZE) % TRACK_MAP_SIZE;
+            QRgb baseCol;
+            if (u < 0.0 || u >= TRACK_MAP_SIZE || v < 0.0 || v >= TRACK_MAP_SIZE) {
+                baseCol = qRgb(10, 8, 9);
+            } else {
+                int mapU = static_cast<int>(u);
+                int mapV = static_cast<int>(v);
+                baseCol = trackPixels[mapV * TRACK_MAP_SIZE + mapU];
 
-            pixels[y * BUFFER_WIDTH + x] = trackPixels[mapV * TRACK_MAP_SIZE + mapU];
+                // Animated Hooghly River water ripples (matches river RGB signature 12, 26, 36)
+                if (qRed(baseCol) == 12 && qGreen(baseCol) == 26 && qBlue(baseCol) == 36) {
+                    double wave = std::sin(u * 0.14 + globalTime * 3.8) + std::cos(v * 0.18 - globalTime * 2.5);
+                    if (wave > 1.1) baseCol = qRgb(28, 52, 68);
+                    else if (wave < -1.2) baseCol = qRgb(42, 24, 18); // fire reflection shimmer
+                }
+            }
+
+            // Ambient blackout + forward headlight cone
+            double absDx = std::abs(dx);
+            double coneHalfW = 36.0 + (dy * 0.85);
+            double lightFactor = 0.46;
+            if (zRow < 250.0 && absDx < coneHalfW) {
+                double radial = 1.0 - (absDx / coneHalfW);
+                double depthFade = 1.0 - (zRow / 250.0);
+                lightFactor += 0.78 * radial * depthFade;
+            }
+            lightFactor = std::min(1.25, lightFactor);
+
+            int sr = std::min(255, static_cast<int>(qRed(baseCol)   * lightFactor));
+            int sg = std::min(255, static_cast<int>(qGreen(baseCol) * lightFactor * 0.96));
+            int sb = std::min(255, static_cast<int>(qBlue(baseCol)  * lightFactor * 0.90));
+
+            // Dynamic firelight halo from nearby burning taxis/vents
+            for (int li = 0; li < numLights; ++li) {
+                double ldx = u - lights[li].x;
+                double ldz = v - lights[li].z;
+                double d2 = ldx * ldx + ldz * ldz;
+                if (d2 < lights[li].radiusSq) {
+                    double falloff = (1.0 - d2 / lights[li].radiusSq) * lights[li].intensity;
+                    sr = std::min(255, sr + static_cast<int>(125.0 * falloff));
+                    sg = std::min(255, sg + static_cast<int>(52.0 * falloff));
+                    sb = std::min(255, sb + static_cast<int>(12.0 * falloff));
+                }
+            }
+
+            int outR = static_cast<int>(sr * invFog + FOG_R * fog);
+            int outG = static_cast<int>(sg * invFog + FOG_G * fog);
+            int outB = static_cast<int>(sb * invFog + FOG_B * fog);
+            pixels[y * BUFFER_WIDTH + x] = qRgb(outR, outG, outB);
         }
     }
 }
@@ -1832,193 +2013,208 @@ void GameCanvas::renderSprites()
         double depth;
         SpriteType type;
         bool isPickup;
+        bool isFireGlow;
+        bool isWarningZone;
+        bool isVehicle;
+        int leanDir;
+        bool isParticle;
+        QRgb particleColor;
         int groundScreenY;
-        QString name = "";
+        int animFrame;
+        QString name;
     };
 
     std::vector<ProjectedSprite> renderList;
-    renderList.reserve(worldSprites.size() + aiOpponents.size() + remoteKarts.size() + activeProjectiles.size() + 4);
+    const auto &structures = hazardSystem.getStructures();
+    const auto &hazards = hazardSystem.getTrackHazards();
+    renderList.reserve(worldSprites.size() + structures.size() + hazards.size() + worldParticles.size() + aiOpponents.size() + 8);
 
     double cosA = std::cos(kartAngle);
     double sinA = std::sin(kartAngle);
     const auto &atlas = SpriteAtlas::instance();
+    int effHorizon = std::clamp(HORIZON_Y + static_cast<int>(horizonPitchOffset + cameraShakeY * 0.5), 90, 210);
+    double effFocal = focalLength + ((nitrousActive || nitrousBoostTimer > 0.0) ? 24.0 : 0.0);
+    int animTick = static_cast<int>(globalTime * 10.0);
+
+    auto isMonument = [](SpriteType t) {
+        return t == SpriteType::VICTORIA_MEMORIAL || t == SpriteType::SHAHEED_MINAR ||
+               t == SpriteType::WRITERS_BUILDING || t == SpriteType::HOWRAH_BRIDGE_TOWER ||
+               t == SpriteType::GARIAHAT_FLYOVER_PIER || t == SpriteType::ESPLANADE_METRO ||
+               t == SpriteType::ST_PAULS_CATHEDRAL || t == SpriteType::THE_42_TOWER;
+    };
+    auto isOverhead = [](SpriteType t) {
+        return t == SpriteType::FLYOVER_BEAM_OVERHEAD ||
+               t == SpriteType::BRIDGE_TRUSS_OVERHEAD ||
+               t == SpriteType::SCAFFOLD_OVERHEAD;
+    };
 
     for (const auto &sprite : worldSprites) {
         if (!sprite.active) continue;
-
         double dx = sprite.x - kartX;
         double dz = sprite.z - kartZ;
-
-        // Camera space coordinates
         double camX = -dx * sinA + dz * cosA;
-        double camZ = dx * cosA + dz * sinA;
+        double camZ =  dx * cosA + dz * sinA;
+        if (camZ <= cameraNearPlane || camZ > 560.0) continue;
 
-        if (camZ <= cameraNearPlane || camZ > 450.0) continue;
-
-        bool isPickup = atlas.isPickup(sprite.type);
-        // Pickups bob up and down smoothly
-        double bobOffset = isPickup ? (std::sin(globalTime * 5.0 + sprite.x * 0.1) * 2.2 + 2.8) : 0.0;
+        bool pickup = atlas.isPickup(sprite.type);
+        double bobOffset = pickup ? (std::sin(globalTime * 5.0 + sprite.x * 0.1) * 1.6 + 2.0) : 0.0;
         double effectiveY = sprite.y + bobOffset;
 
-        int sx = static_cast<int>((BUFFER_WIDTH / 2) + (focalLength * camX) / camZ);
-        int sy = static_cast<int>(HORIZON_Y + (focalLength * (cameraHeight - effectiveY)) / camZ);
-        int groundY = static_cast<int>(HORIZON_Y + (focalLength * cameraHeight) / camZ);
+        int sx = static_cast<int>((BUFFER_WIDTH / 2) + (effFocal * camX) / camZ + cameraShakeX * 0.5);
+        int sy = static_cast<int>(effHorizon + (effFocal * (cameraHeight - effectiveY)) / camZ);
+        int groundY = static_cast<int>(effHorizon + (effFocal * cameraHeight) / camZ);
 
-        double scale = focalLength / camZ;
-        double baseSize = (sprite.type == SpriteType::THWOMP) ? 15.0 : 20.0;
-        int drawW = static_cast<int>(baseSize * scale);
-        int drawH = static_cast<int>(baseSize * scale);
+        double scale = effFocal / camZ;
+        double baseW = 18.0, baseH = 18.0;
+        if (isMonument(sprite.type)) { baseW = 74.0; baseH = 56.0; }
+        else if (isOverhead(sprite.type)) { baseW = 92.0; baseH = 38.0; }
+        else if (sprite.type == SpriteType::BURNING_TAXI || sprite.type == SpriteType::WRECKED_BUS ||
+                 sprite.type == SpriteType::DERAILED_TRAM || sprite.type == SpriteType::BURNING_AUTO) {
+            baseW = 30.0; baseH = 22.0;
+        } else if (sprite.type == SpriteType::STEEL_GIRDER || sprite.type == SpriteType::CONCRETE_RUBBLE) {
+            baseW = 26.0; baseH = 19.0;
+        }
 
+        int drawW = std::min(260, static_cast<int>(baseW * scale));
+        int drawH = std::min(220, static_cast<int>(baseH * scale));
         if (drawW <= 1 || drawH <= 1) continue;
 
-        renderList.push_back({ sx, sy, drawW, drawH, camZ, sprite.type, isPickup, groundY, "" });
+        bool fire = (sprite.type == SpriteType::BURNING_TAXI || sprite.type == SpriteType::BURNING_AUTO);
+        renderList.push_back({ sx, sy, drawW, drawH, camZ, sprite.type, pickup, fire, false, false, 0, false, 0, groundY, animTick, "" });
     }
 
-    // 2. Project Active AI Opponents or Remote Network Karts
-    if (isNetworkRace) {
-        for (const auto &rk : remoteKarts) {
-            double dx = rk.x - kartX;
-            double dz = rk.z - kartZ;
-
-            double camX = -dx * sinA + dz * cosA;
-            double camZ =  dx * cosA + dz * sinA;
-
-            if (camZ <= 5.0 || camZ > 480.0) continue;
-
-            int sx = static_cast<int>((BUFFER_WIDTH / 2) + (focalLength * camX) / camZ);
-            int groundY = static_cast<int>(HORIZON_Y + (focalLength * cameraHeight) / camZ);
-            if (groundY <= HORIZON_Y) continue;
-
-            double scale = focalLength / camZ;
-            double baseSize = (rk.characterId == 1) ? 25.0 : 22.0;
-            int drawW = static_cast<int>(baseSize * scale);
-            int drawH = static_cast<int>(baseSize * scale);
-
-            if (drawW <= 2 || drawH <= 2) continue;
-            drawW = std::min(180, drawW);
-            drawH = std::min(180, drawH);
-
-            if (sx + drawW / 2 < 0 || sx - drawW / 2 >= BUFFER_WIDTH) continue;
-
-            bool isAlt = (rk.characterId == getSelectedCharacterP1().id);
-            SpriteType kartSprite = getKartSpriteType(rk.characterId, isAlt);
-            renderList.push_back({ sx, groundY, drawW, drawH, camZ, kartSprite, false, groundY, rk.name });
-        }
-    } else if (selectedGameMode == GameMode::PLAY_VS_AI) {
-        for (const auto &ai : aiOpponents) {
-            double dx = ai.x - kartX;
-            double dz = ai.z - kartZ;
-
-            double camX = -dx * sinA + dz * cosA;
-            double camZ =  dx * cosA + dz * sinA;
-
-            if (camZ <= 5.0 || camZ > 480.0) continue;
-
-            int sx = static_cast<int>((BUFFER_WIDTH / 2) + (focalLength * camX) / camZ);
-            int groundY = static_cast<int>(HORIZON_Y + (focalLength * cameraHeight) / camZ);
-            if (groundY <= HORIZON_Y) continue;
-
-            double scale = focalLength / camZ;
-            double baseSize = (ai.characterId == 1) ? 25.0 : 22.0;
-            int drawW = static_cast<int>(baseSize * scale);
-            int drawH = static_cast<int>(baseSize * scale);
-
-            if (drawW <= 2 || drawH <= 2) continue;
-            drawW = std::min(180, drawW);
-            drawH = std::min(180, drawH);
-
-            if (sx + drawW / 2 < 0 || sx - drawW / 2 >= BUFFER_WIDTH) continue;
-
-            SpriteType kartSprite = getKartSpriteType(ai.characterId);
-            renderList.push_back({ sx, groundY, drawW, drawH, camZ, kartSprite, false, groundY, "" });
-        }
-    }
-
-    // 3. Project Active Projectiles (Shells)
-    for (const auto &shell : activeProjectiles) {
-        if (!shell.active) continue;
-
-        double dx = shell.x - kartX;
-        double dz = shell.z - kartZ;
-
+    for (const auto &cs : structures) {
+        double renderX = cs.x;
+        if (cs.state == CollapseState::WARNING) renderX += ((rand() % 5) - 2) * 1.4;
+        double dx = renderX - kartX;
+        double dz = cs.z - kartZ;
         double camX = -dx * sinA + dz * cosA;
         double camZ =  dx * cosA + dz * sinA;
+        if (camZ <= cameraNearPlane || camZ > 540.0) continue;
 
-        if (camZ <= 5.0 || camZ > 450.0) continue;
+        int sx = static_cast<int>((BUFFER_WIDTH / 2) + (effFocal * camX) / camZ + cameraShakeX * 0.5);
+        int sy = static_cast<int>(effHorizon + (effFocal * (cameraHeight - cs.y)) / camZ);
+        int groundY = static_cast<int>(effHorizon + (effFocal * cameraHeight) / camZ);
+        double scale = effFocal / camZ;
 
-        int sx = static_cast<int>((BUFFER_WIDTH / 2) + (focalLength * camX) / camZ);
-        int groundY = static_cast<int>(HORIZON_Y + (focalLength * cameraHeight) / camZ);
-        if (groundY <= HORIZON_Y) continue;
+        SpriteType st = SpriteType::GIRDER_FALLING;
+        double bw = 32.0, bh = 38.0;
+        if (cs.state == CollapseState::INTACT || cs.state == CollapseState::WARNING) {
+            st = (cs.spriteIndex == 1) ? SpriteType::BRIDGE_TRUSS_OVERHEAD
+               : (cs.spriteIndex == 2 ? SpriteType::SCAFFOLD_OVERHEAD : SpriteType::FLYOVER_BEAM_OVERHEAD);
+            bw = 82.0; bh = 34.0;
+        } else if (cs.state == CollapseState::FALLING) {
+            st = (cs.spriteIndex == 1) ? SpriteType::BRIDGE_TRUSS_FALLING
+               : (cs.spriteIndex == 2 ? SpriteType::SCAFFOLD_FALLING : SpriteType::GIRDER_FALLING);
+            bw = 34.0; bh = 42.0;
+        } else {
+            st = SpriteType::STEEL_GIRDER;
+            bw = 30.0; bh = 20.0;
+        }
 
-        double scale = focalLength / camZ;
-        int drawW = static_cast<int>(18.0 * scale);
-        int drawH = static_cast<int>(18.0 * scale);
-
+        int drawW = std::min(240, static_cast<int>(bw * scale));
+        int drawH = std::min(200, static_cast<int>(bh * scale));
         if (drawW <= 1 || drawH <= 1) continue;
 
-        renderList.push_back({ sx, groundY, drawW, drawH, camZ, SpriteType::SHELL_PROJECTILE, false, groundY });
+        bool warn = (cs.state == CollapseState::WARNING || cs.state == CollapseState::FALLING);
+        renderList.push_back({ sx, sy, drawW, drawH, camZ, st, false, false, warn, false, 0, false, 0, groundY, animTick, "" });
     }
 
-    // 4. Project Track Hazards (Lava Geysers, Chocolate Fountains & Rolling Candies)
-    for (const auto &hazard : trackHazards) {
-        double worldX = hazard.x;
-        double worldZ = hazard.z;
-
-        // Rolling candy cross-track sinusoidal motion offset
-        if (hazard.type == HazardType::ROLLING_CANDY) {
-            worldX += 40.0 * std::sin(hazard.animTimer * 2.0);
-        }
-
-        double dx = worldX - kartX;
-        double dz = worldZ - kartZ;
-
-        // Mode-7 Camera transform
+    for (const auto &hz : hazards) {
+        double dx = hz.x - kartX;
+        double dz = hz.z - kartZ;
         double camX = -dx * sinA + dz * cosA;
         double camZ =  dx * cosA + dz * sinA;
+        if (camZ <= cameraNearPlane || camZ > 500.0) continue;
 
-        // Depth culling
+        int sx = static_cast<int>((BUFFER_WIDTH / 2) + (effFocal * camX) / camZ + cameraShakeX * 0.5);
+        int groundY = static_cast<int>(effHorizon + (effFocal * cameraHeight) / camZ);
+        if (groundY <= effHorizon) continue;
+
+        double scale = effFocal / camZ;
+        SpriteType st = SpriteType::BURNING_TAXI;
+        double bw = 28.0, bh = 22.0;
+        bool fire = false;
+
+        switch (hz.type) {
+        case HazardType::BURNING_TAXI:  st = SpriteType::BURNING_TAXI; fire = true; break;
+        case HazardType::WRECKED_BUS:   st = SpriteType::WRECKED_BUS;  bw = 34.0; bh = 24.0; break;
+        case HazardType::DERAILED_TRAM: st = SpriteType::DERAILED_TRAM; bw = 36.0; bh = 26.0; break;
+        case HazardType::BURNING_AUTO:  st = SpriteType::BURNING_AUTO; fire = true; bw = 22.0; bh = 18.0; break;
+        case HazardType::ROAD_FISSURE:  st = SpriteType::CONCRETE_RUBBLE; bw = 26.0; bh = 15.0; break;
+        case HazardType::GAS_VENT:
+            st = hz.isErupting ? SpriteType::BURNING_TAXI : SpriteType::ROAD_BARRIER;
+            fire = hz.isErupting;
+            bw = hz.isErupting ? 26.0 : 16.0;
+            bh = hz.isErupting ? 36.0 : 14.0;
+            break;
+        case HazardType::LIVE_WIRE:     st = SpriteType::STEEL_GIRDER; bw = 20.0; bh = 14.0; break;
+        default: break;
+        }
+
+        int drawW = std::min(200, static_cast<int>(bw * scale));
+        int drawH = std::min(180, static_cast<int>(bh * scale));
+        if (drawW <= 1 || drawH <= 1) continue;
+
+        renderList.push_back({ sx, groundY, drawW, drawH, camZ, st, false, fire, false, false, 0, false, 0, groundY, animTick, "" });
+    }
+
+    // 3D Mode-7 Projected World Particles (Smoke, Embers, Concrete Dust, Electric Sparks)
+    for (const auto &wp : worldParticles) {
+        double dx = wp.x - kartX;
+        double dz = wp.z - kartZ;
+        double camX = -dx * sinA + dz * cosA;
+        double camZ =  dx * cosA + dz * sinA;
         if (camZ <= cameraNearPlane || camZ > 450.0) continue;
 
-        int groundY = static_cast<int>(HORIZON_Y + (focalLength * cameraHeight) / camZ);
-        if (groundY <= HORIZON_Y) continue;
-
-        double scale = focalLength / camZ;
-        int sx = static_cast<int>((BUFFER_WIDTH / 2) + (focalLength * camX) / camZ);
-
-        SpriteType hazardSprite = SpriteType::LAVA_GEYSER_BUBBLING;
-        double baseW = 20.0;
-        double baseH = 20.0;
-
-        if (hazard.type == HazardType::LAVA_GEYSER) {
-            if (hazard.isErupting) {
-                hazardSprite = SpriteType::LAVA_GEYSER_ERUPTING;
-                baseW = 26.0;
-                double u = std::clamp((hazard.animTimer - 3.3) / 1.5, 0.0, 1.0);
-                double flameH = 24.0 + 16.0 * std::sin(u * M_PI);
-                baseH = flameH;
-            } else {
-                hazardSprite = SpriteType::LAVA_GEYSER_BUBBLING;
-                baseW = 22.0;
-                baseH = 16.0;
-            }
-        } else if (hazard.type == HazardType::CHOCOLATE_FOUNTAIN) {
-            hazardSprite = SpriteType::CHOCOLATE_FOUNTAIN;
-            baseW = 24.0;
-            baseH = 24.0;
-        } else if (hazard.type == HazardType::ROLLING_CANDY) {
-            hazardSprite = SpriteType::CHOCOLATE_CANDY;
-            baseW = 20.0;
-            baseH = 20.0;
-        }
-
-        int drawW = static_cast<int>(baseW * scale);
-        int drawH = static_cast<int>(baseH * scale);
-        if (drawW <= 1 || drawH <= 1) continue;
-
-        renderList.push_back({ sx, groundY, drawW, drawH, camZ, hazardSprite, false, groundY });
+        int sx = static_cast<int>((BUFFER_WIDTH / 2) + (effFocal * camX) / camZ);
+        int sy = static_cast<int>(effHorizon + (effFocal * (cameraHeight - wp.y)) / camZ);
+        int pSize = std::clamp(static_cast<int>((wp.baseSize * effFocal) / camZ), 1, 14);
+        renderList.push_back({ sx, sy, pSize, pSize, camZ, SpriteType::SUPPLY_CRATE, false, false, false, false, 0, true, wp.color, sy, 0, "" });
     }
 
-    // Sort farthest to nearest (Painter's Algorithm)
+    auto projectVehicle = [&](const KartEntity &k, bool checkAlt, const QString &tag) {
+        double dx = k.x - kartX;
+        double dz = k.z - kartZ;
+        double camX = -dx * sinA + dz * cosA;
+        double camZ =  dx * cosA + dz * sinA;
+        if (camZ <= 5.0 || camZ > 500.0) return;
+
+        int sx = static_cast<int>((BUFFER_WIDTH / 2) + (effFocal * camX) / camZ + cameraShakeX * 0.5);
+        int groundY = static_cast<int>(effHorizon + (effFocal * cameraHeight) / camZ);
+        if (groundY <= effHorizon) return;
+
+        double scale = effFocal / camZ;
+        double baseSize = (k.vehicleId == 1) ? 26.0 : 22.0;
+        int drawW = std::min(180, static_cast<int>(baseSize * scale));
+        int drawH = std::min(180, static_cast<int>(baseSize * scale));
+        if (drawW <= 2 || drawH <= 2) return;
+        if (sx + drawW / 2 < 0 || sx - drawW / 2 >= BUFFER_WIDTH) return;
+
+        int lean = (k.steerAngle < -0.25) ? -1 : (k.steerAngle > 0.25 ? 1 : 0);
+        SpriteType st = getVehicleSpriteType(k.vehicleId, checkAlt);
+        renderList.push_back({ sx, groundY, drawW, drawH, camZ, st, false, false, false, true, lean, false, 0, groundY, 0, tag });
+    };
+
+    if (isNetworkRace) {
+        for (const auto &rk : remoteKarts) projectVehicle(rk, rk.vehicleId == selectedVehicleP1, rk.name);
+    } else if (selectedGameMode == GameMode::RANKED_ESCAPE) {
+        for (const auto &ai : aiOpponents) projectVehicle(ai, false, ai.name);
+    }
+
+    for (const auto &p : activeProjectiles) {
+        if (!p.active) continue;
+        double dx = p.x - kartX, dz = p.z - kartZ;
+        double camX = -dx * sinA + dz * cosA;
+        double camZ =  dx * cosA + dz * sinA;
+        if (camZ <= 4.0 || camZ > 450.0) continue;
+        int sx = static_cast<int>((BUFFER_WIDTH / 2) + (effFocal * camX) / camZ);
+        int groundY = static_cast<int>(effHorizon + (effFocal * cameraHeight) / camZ);
+        if (groundY <= effHorizon) continue;
+        int drawW = std::max(2, static_cast<int>(14.0 * effFocal / camZ));
+        renderList.push_back({ sx, groundY, drawW, drawW, camZ, SpriteType::NITROUS_CELL, false, true, false, false, 0, false, 0, groundY, 0, "" });
+    }
+
     std::sort(renderList.begin(), renderList.end(), [](const ProjectedSprite &a, const ProjectedSprite &b) {
         return a.depth > b.depth;
     });
@@ -2026,54 +2222,60 @@ void GameCanvas::renderSprites()
     QRgb *pixels = reinterpret_cast<QRgb*>(screenBuffer.bits());
 
     for (const auto &item : renderList) {
-        // Draw soft ground shadow beneath floating pickups and karts
-        bool shouldShadow = item.isPickup ||
-                            item.type == SpriteType::KART_MARIO || item.type == SpriteType::KART_BOWSER ||
-                            item.type == SpriteType::KART_PEACH || item.type == SpriteType::KART_TOAD ||
-                            item.type == SpriteType::KART_MARIO_ALT || item.type == SpriteType::KART_BOWSER_ALT ||
-                            item.type == SpriteType::KART_PEACH_ALT || item.type == SpriteType::KART_TOAD_ALT ||
-                            item.type == SpriteType::CHOCOLATE_CANDY || item.type == SpriteType::CHOCOLATE_FOUNTAIN;
-        if (shouldShadow && item.groundScreenY >= HORIZON_Y && item.groundScreenY < BUFFER_HEIGHT) {
-            int shadowW = item.drawW * 3 / 4;
+        if (item.isParticle) {
+            for (int py = item.screenY - item.drawH / 2; py <= item.screenY + item.drawH / 2; ++py) {
+                if (py < 0 || py >= BUFFER_HEIGHT) continue;
+                for (int px = item.screenX - item.drawW / 2; px <= item.screenX + item.drawW / 2; ++px) {
+                    if (px >= 0 && px < BUFFER_WIDTH) pixels[py * BUFFER_WIDTH + px] = item.particleColor;
+                }
+            }
+            continue;
+        }
+
+        if (item.groundScreenY >= effHorizon && item.groundScreenY < BUFFER_HEIGHT) {
+            int shadowW = std::max(4, item.drawW * 3 / 4);
             int shadowH = std::max(2, item.drawW / 4);
-            int shStartX = item.screenX - shadowW / 2;
-            int shStartY = item.groundScreenY - shadowH / 2;
+            int shX0 = item.screenX - shadowW / 2;
+            int shY0 = item.groundScreenY - shadowH / 2;
 
             for (int sy = 0; sy < shadowH; ++sy) {
-                int py = shStartY + sy;
-                if (py < HORIZON_Y || py >= BUFFER_HEIGHT) continue;
+                int py = shY0 + sy;
+                if (py < effHorizon || py >= BUFFER_HEIGHT) continue;
                 for (int sx = 0; sx < shadowW; ++sx) {
-                    int px = shStartX + sx;
+                    int px = shX0 + sx;
                     if (px < 0 || px >= BUFFER_WIDTH) continue;
-
                     double nx = (sx - shadowW / 2.0) / (shadowW / 2.0);
                     double ny = (sy - shadowH / 2.0) / (shadowH / 2.0);
                     if (nx * nx + ny * ny <= 1.0) {
                         QRgb bg = pixels[py * BUFFER_WIDTH + px];
-                        int r = (qRed(bg) * 55) / 100;
-                        int g = (qGreen(bg) * 55) / 100;
-                        int b = (qBlue(bg) * 55) / 100;
-                        pixels[py * BUFFER_WIDTH + px] = qRgb(r, g, b);
+                        if (item.isWarningZone) {
+                            int pulse = static_cast<int>(125 + 80 * std::sin(globalTime * 18.0));
+                            pixels[py * BUFFER_WIDTH + px] = qRgb(std::min(255, qRed(bg) + pulse), qGreen(bg) / 2, qBlue(bg) / 2);
+                        } else if (item.isFireGlow) {
+                            pixels[py * BUFFER_WIDTH + px] = qRgb(std::min(255, qRed(bg) + 80), std::min(255, qGreen(bg) + 32), qBlue(bg));
+                        } else {
+                            pixels[py * BUFFER_WIDTH + px] = qRgb((qRed(bg) * 50) / 100, (qGreen(bg) * 50) / 100, (qBlue(bg) * 50) / 100);
+                        }
                     }
                 }
             }
         }
 
-        // Draw textured billboard
-        const QImage &texture = atlas.getSprite(item.type);
+        const QImage &texture = item.isVehicle
+            ? atlas.getVehicleFrame(item.type, item.leanDir)
+            : atlas.getAnimFrame(item.type, item.animFrame);
         drawTexturedBillboard(item.screenX, item.screenY, item.drawW, item.drawH, texture);
 
         if (!item.name.isEmpty()) {
             QPainter tagPainter(&screenBuffer);
-            QFont tagFont("Arial", 5, QFont::Bold);
-            tagPainter.setFont(tagFont);
-            int tagW = std::clamp(item.drawW + 10, 32, 80);
+            tagPainter.setFont(QFont("Arial", 5, QFont::Bold));
+            int tagW = std::clamp(item.drawW + 14, 44, 96);
             int tagH = 10;
             int tagX = item.screenX - tagW / 2;
             int tagY = item.screenY - item.drawH - 11;
             if (tagY >= 0 && tagX >= 0 && tagX + tagW < BUFFER_WIDTH) {
-                tagPainter.fillRect(QRect(tagX, tagY, tagW, tagH), QColor(10, 16, 28, 200));
-                tagPainter.setPen(QPen(QColor(0, 229, 255), 1));
+                tagPainter.fillRect(QRect(tagX, tagY, tagW, tagH), QColor(12, 10, 14, 210));
+                tagPainter.setPen(QPen(QColor(245, 155, 25), 1));
                 tagPainter.drawRect(QRect(tagX, tagY, tagW, tagH));
                 tagPainter.setPen(Qt::white);
                 tagPainter.drawText(QRect(tagX, tagY, tagW, tagH), Qt::AlignCenter, item.name);
@@ -2095,238 +2297,397 @@ void GameCanvas::drawTexturedBillboard(int screenX, int screenY, int drawW, int 
     int startY = screenY - drawH;
 
     int clipStartX = std::max(0, startX);
-    int clipEndX = std::min(BUFFER_WIDTH, startX + drawW);
+    int clipEndX   = std::min(BUFFER_WIDTH, startX + drawW);
     int clipStartY = std::max(0, startY);
-    int clipEndY = std::min(BUFFER_HEIGHT, startY + drawH);
+    int clipEndY   = std::min(BUFFER_HEIGHT, startY + drawH);
 
     for (int y = clipStartY; y < clipEndY; ++y) {
-        int ty = ((y - startY) * texH) / drawH;
-        if (ty < 0) ty = 0;
-        if (ty >= texH) ty = texH - 1;
+        int ty = std::clamp(((y - startY) * texH) / drawH, 0, texH - 1);
         const QRgb *texRow = texPixels + ty * texW;
         QRgb *bufRow = pixels + y * BUFFER_WIDTH;
 
         for (int x = clipStartX; x < clipEndX; ++x) {
-            int tx = ((x - startX) * texW) / drawW;
-            if (tx < 0) tx = 0;
-            if (tx >= texW) tx = texW - 1;
-
+            int tx = std::clamp(((x - startX) * texW) / drawW, 0, texW - 1);
             QRgb color = texRow[tx];
             int alpha = qAlpha(color);
-            if (alpha < 32) continue; // transparent pixel
+            if (alpha < 32) continue;
 
             if (alpha >= 250) {
                 bufRow[x] = color;
             } else {
-                // Alpha blend
                 QRgb dst = bufRow[x];
                 int invA = 255 - alpha;
-                int r = (qRed(color) * alpha + qRed(dst) * invA) / 255;
+                int r = (qRed(color)   * alpha + qRed(dst)   * invA) / 255;
                 int g = (qGreen(color) * alpha + qGreen(dst) * invA) / 255;
-                int b = (qBlue(color) * alpha + qBlue(dst) * invA) / 255;
+                int b = (qBlue(color)  * alpha + qBlue(dst)  * invA) / 255;
                 bufRow[x] = qRgb(r, g, b);
             }
         }
     }
 }
 
+void GameCanvas::initAshParticles()
+{
+    ashParticles.clear();
+    for (int i = 0; i < 70; ++i) {
+        AshParticle p;
+        p.x = rand() % BUFFER_WIDTH;
+        p.y = rand() % BUFFER_HEIGHT;
+        p.vx = -15.0 - (rand() % 30);
+        p.vy = 18.0 + (rand() % 35);
+        p.isEmber = (i % 4 == 0);
+        p.size = p.isEmber ? 1.5 : 1.0;
+        p.color = p.isEmber ? qRgb(255, 130, 30) : qRgb(145, 140, 138);
+        ashParticles.push_back(p);
+    }
+}
+
+void GameCanvas::updateAshParticles(double dt)
+{
+    for (auto &p : ashParticles) {
+        p.x += (p.vx - steeringVisualAngle * 45.0) * dt;
+        p.y += p.vy * dt;
+        if (p.x < 0) p.x += BUFFER_WIDTH;
+        if (p.x >= BUFFER_WIDTH) p.x -= BUFFER_WIDTH;
+        if (p.y >= BUFFER_HEIGHT) {
+            p.y = 0;
+            p.x = rand() % BUFFER_WIDTH;
+        }
+    }
+}
+
+void GameCanvas::renderAshOverlay()
+{
+    QRgb *pixels = reinterpret_cast<QRgb*>(screenBuffer.bits());
+    for (const auto &p : ashParticles) {
+        int px = static_cast<int>(p.x);
+        int py = static_cast<int>(p.y);
+        if (px >= 0 && px < BUFFER_WIDTH && py >= 0 && py < BUFFER_HEIGHT) {
+            pixels[py * BUFFER_WIDTH + px] = p.color;
+            if (p.isEmber && px + 1 < BUFFER_WIDTH) {
+                pixels[py * BUFFER_WIDTH + px + 1] = qRgb(220, 75, 15);
+            }
+        }
+    }
+}
+
+void GameCanvas::renderSpeedLines()
+{
+    if (!nitrousActive && nitrousBoostTimer <= 0.0 && miniTurboTimer <= 0.0) return;
+
+    QPainter painter(&screenBuffer);
+    bool isNitro = (nitrousActive || nitrousBoostTimer > 0.0);
+    painter.setPen(QPen(isNitro ? QColor(110, 235, 255, 140) : QColor(255, 185, 55, 130), 1));
+    int cx = BUFFER_WIDTH / 2, cy = HORIZON_Y;
+    for (int i = 0; i < 16; ++i) {
+        double a = (i * (2.0 * M_PI / 16.0)) + std::fmod(globalTime * 4.0, 0.4);
+        int r1 = 125 + (rand() % 20);
+        int r2 = 195 + (rand() % 30);
+        painter.drawLine(cx + static_cast<int>(std::cos(a) * r1), cy + static_cast<int>(std::sin(a) * r1 * 0.7),
+                         cx + static_cast<int>(std::cos(a) * r2), cy + static_cast<int>(std::sin(a) * r2 * 0.7));
+    }
+}
+
 void GameCanvas::renderCockpit()
 {
     QRgb *pixels = reinterpret_cast<QRgb*>(screenBuffer.bits());
-    const CharacterDef &c = getSelectedCharacterP1();
+    const VehicleDef &v = getSelectedVehicleP1();
 
-    // Boost flame / sparks effect when boost is active (Mushroom or Mini-Turbo)
-    if (mushroomBoostTimer > 0.0 || miniTurboTimer > 0.0) {
-        int cx = BUFFER_WIDTH / 2;
-        bool isMiniTurbo = (miniTurboTimer > 0.0 && mushroomBoostTimer <= 0.0);
-        for (int i = 0; i < 24; ++i) {
-            int px = cx + (rand() % 90 - 45);
-            int py = BUFFER_HEIGHT - 35 + (rand() % 35);
-            if (px >= 0 && px < BUFFER_WIDTH && py >= 0 && py < BUFFER_HEIGHT) {
-                if (isMiniTurbo) {
-                    pixels[py * BUFFER_WIDTH + px] = (rand() % 2 == 0) ? qRgb(80, 200, 255) : qRgb(255, 160, 30);
-                } else {
-                    pixels[py * BUFFER_WIDTH + px] = (rand() % 2 == 0) ? qRgb(255, 230, 50) : qRgb(255, 80, 20);
-                }
-            }
-        }
-    }
-
-    // Render drift spark particles over bottom tire areas
     for (const auto &sp : driftSparks) {
-        int sx = static_cast<int>(sp.x);
-        int sy = static_cast<int>(sp.y);
+        int sx = static_cast<int>(sp.x), sy = static_cast<int>(sp.y);
         if (sx >= 0 && sx < BUFFER_WIDTH && sy >= 0 && sy < BUFFER_HEIGHT) {
             pixels[sy * BUFFER_WIDTH + sx] = sp.color;
-            if (sx + 1 < BUFFER_WIDTH) pixels[sy * BUFFER_WIDTH + sx + 1] = sp.color;
-            if (sy + 1 < BUFFER_HEIGHT) pixels[(sy + 1) * BUFFER_WIDTH + sx] = sp.color;
         }
     }
 
-    // First-person kart hood at bottom center (with parabolic hop vertical bob)
-    int hoodCenter = BUFFER_WIDTH / 2;
-    int hoodTop = BUFFER_HEIGHT - 35 - static_cast<int>(driftHopHeight * 2.2);
+    // 1. Angled Roll-Cage A-Pillars + Roof Visor Bar (real survival truck/car cabin)
+    QRgb cageCol = qRgb(16, 15, 18);
+    for (int y = 0; y < BUFFER_HEIGHT; ++y) {
+        int barW = 4 + (y / 38);
+        for (int x = 0; x < barW; ++x) {
+            pixels[y * BUFFER_WIDTH + x] = cageCol;
+            pixels[y * BUFFER_WIDTH + (BUFFER_WIDTH - 1 - x)] = cageCol;
+        }
+    }
 
-    QRgb baseHoodColor = c.primaryColor.rgb();
-    QRgb hoodColor = (mushroomBoostTimer > 0.0 || miniTurboTimer > 0.0) ? qRgb(255, 120, 25) : baseHoodColor;
-    QRgb stripeColor = c.secondaryColor.rgb();
+    // 2. Scarred Vehicle Hood seen over dashboard
+    int vibY = static_cast<int>(cameraShakeY * 0.6 + ((std::abs(kartSpeed) > 10.0) ? std::sin(globalTime * 35.0) * 0.8 : 0.0));
+    int hoodCenter = BUFFER_WIDTH / 2 + static_cast<int>(cameraShakeX * 0.5);
+    int hoodTop = BUFFER_HEIGHT - 44 + vibY;
+    QRgb hoodCol = (dozerRamTimer > 0.0) ? qRgb(135, 145, 160) : v.primaryColor.darker(135).rgb();
+    QRgb stripeCol = v.secondaryColor.rgb();
 
-    for (int y = hoodTop; y < BUFFER_HEIGHT; ++y) {
-        if (y < 0) continue;
-        int halfWidth = static_cast<int>(30.0 + (y - hoodTop) * 2.2);
-        for (int x = hoodCenter - halfWidth; x < hoodCenter + halfWidth; ++x) {
-            if (x >= 0 && x < BUFFER_WIDTH && y < BUFFER_HEIGHT) {
-                // Center racing stripe (4px width)
-                if (std::abs(x - hoodCenter) <= 2) {
-                    pixels[y * BUFFER_WIDTH + x] = stripeColor;
-                } else {
-                    pixels[y * BUFFER_WIDTH + x] = hoodColor;
-                }
+    for (int y = std::max(0, hoodTop); y < BUFFER_HEIGHT - 24; ++y) {
+        int halfW = static_cast<int>(55.0 + (y - hoodTop) * 2.6);
+        for (int x = hoodCenter - halfW; x < hoodCenter + halfW; ++x) {
+            if (x >= 0 && x < BUFFER_WIDTH) {
+                pixels[y * BUFFER_WIDTH + x] = (std::abs(x - hoodCenter) <= 3) ? stripeCol : hoodCol;
             }
         }
     }
 
-    // Steering wheel (Rotated pixel ring with hop offset)
-    int wheelY = BUFFER_HEIGHT - 22 - static_cast<int>(driftHopHeight * 2.2);
-    int wheelX = BUFFER_WIDTH / 2 + static_cast<int>(steeringVisualAngle * 30.0);
-    int wheelR = 14;
+    // 3. Full Dark Apocalypse Dashboard & Instrument Cluster
+    QPainter painter(&screenBuffer);
+    painter.setRenderHint(QPainter::Antialiasing, false);
+    painter.fillRect(0, BUFFER_HEIGHT - 28, BUFFER_WIDTH, 28, QColor(14, 13, 16));
+    painter.setPen(QPen(QColor(55, 50, 48), 1));
+    painter.drawLine(0, BUFFER_HEIGHT - 28, BUFFER_WIDTH, BUFFER_HEIGHT - 28);
 
-    QRgb wheelGripColor = qRgb(240, 240, 240); // Standard white
-    if (c.id == 1) wheelGripColor = qRgb(80, 85, 90);       // Bowser gunmetal
-    else if (c.id == 2) wheelGripColor = qRgb(255, 215, 50); // Peach gold grip
+    // Animated LED RPM strip in center dash
+    double rpmFrac = std::clamp(std::abs(kartSpeed) / std::max(1.0, maxSpeed), 0.0, 1.0);
+    int activeLeds = static_cast<int>(rpmFrac * 12.0);
+    for (int i = 0; i < 12; ++i) {
+        QColor ledCol = (i >= activeLeds) ? QColor(28, 28, 32)
+                      : (i >= 9 ? QColor(235, 45, 35) : (i >= 6 ? QColor(245, 165, 25) : QColor(80, 210, 95)));
+        painter.fillRect(156 + i * 7, BUFFER_HEIGHT - 22, 5, 5, ledCol);
+    }
 
-    for (int y = wheelY - wheelR; y <= wheelY + wheelR; ++y) {
-        if (y < 0 || y >= BUFFER_HEIGHT) continue;
-        for (int x = wheelX - wheelR; x <= wheelX + wheelR; ++x) {
-            if (x < 0 || x >= BUFFER_WIDTH) continue;
-            int dist2 = (x - wheelX) * (x - wheelX) + (y - wheelY) * (y - wheelY);
-            if (dist2 >= (wheelR - 3) * (wheelR - 3) && dist2 <= wheelR * wheelR) {
-                pixels[y * BUFFER_WIDTH + x] = wheelGripColor;
+    // Blinking hazard LED if hull < 40% or collapse close
+    if (playerHull.integrity < 40.0 || playerHull.isOnFire) {
+        bool blink = (static_cast<int>(globalTime * 8.0) % 2 == 0);
+        painter.fillRect(142, BUFFER_HEIGHT - 22, 6, 6, blink ? QColor(255, 40, 35) : QColor(50, 15, 15));
+    }
+
+    // Tactical Steering Wheel (shifted left/right smoothly)
+    int wx = BUFFER_WIDTH / 2 + static_cast<int>(steeringVisualAngle * 22.0);
+    int wy = BUFFER_HEIGHT - 6;
+    painter.setPen(QPen(QColor(38, 38, 42), 4));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawEllipse(QPoint(wx, wy), 22, 22);
+    painter.setPen(QPen(QColor(115, 75, 30), 3));
+    painter.drawLine(wx - 18, wy - 2, wx + 18, wy - 2);
+    painter.drawLine(wx, wy, wx, wy + 18);
+
+    // 4. Top Rearview Mirror showing approaching firestorm / collapse front
+    QRect mirror(BUFFER_WIDTH / 2 - 42, 4, 84, 14);
+    double threat = std::clamp(1.0 - (splineProgress - collapseWaveProgress) * 5.0, 0.0, 1.0);
+    int glowR = static_cast<int>(25 + threat * 195);
+    painter.fillRect(mirror, QColor(glowR, 20 + static_cast<int>(threat * 45), 14));
+    painter.setPen(QPen(QColor(65, 62, 68), 1));
+    painter.drawRect(mirror);
+    painter.setFont(QFont("Arial", 4, QFont::Bold));
+    painter.setPen(threat > 0.6 ? QColor(255, 220, 140) : QColor(145, 140, 138));
+    painter.drawText(mirror, Qt::AlignCenter, threat > 0.6 ? "REAR: COLLAPSE!" : "REAR VIEW");
+
+    // 5. Red damage border flash
+    if (damageFlashTimer > 0.0) {
+        int boost = static_cast<int>(damageFlashTimer * 180.0);
+        for (int y = 0; y < BUFFER_HEIGHT; ++y) {
+            for (int x = 0; x < BUFFER_WIDTH; ++x) {
+                if (x < 10 || x >= BUFFER_WIDTH - 10 || y < 10 || y >= BUFFER_HEIGHT - 10) {
+                    QRgb c = pixels[y * BUFFER_WIDTH + x];
+                    pixels[y * BUFFER_WIDTH + x] = qRgb(std::min(255, qRed(c) + boost), qGreen(c) / 2, qBlue(c) / 2);
+                }
             }
         }
     }
 }
 
-void GameCanvas::renderItemHUD()
+void GameCanvas::renderWindshieldCracks()
+{
+    if (playerHull.crackLevel <= 0 && !playerHull.isOnFire) return;
+    QPainter painter(&screenBuffer);
+    if (playerHull.crackLevel >= 1) {
+        painter.setPen(QPen(QColor(210, 220, 230, 155), 1));
+        painter.drawLine(28, 22, 68, 56);
+        painter.drawLine(68, 56, 94, 48);
+        painter.drawLine(68, 56, 56, 92);
+    }
+    if (playerHull.crackLevel >= 2) {
+        painter.setPen(QPen(QColor(235, 240, 245, 205), 1));
+        painter.drawLine(360, 24, 315, 68);
+        painter.drawLine(315, 68, 338, 108);
+        painter.drawLine(315, 68, 282, 82);
+    }
+    if (playerHull.isOnFire) {
+        int a = static_cast<int>(50 + 30 * std::sin(globalTime * 16.0));
+        painter.fillRect(0, BUFFER_HEIGHT - 55, BUFFER_WIDTH, 30, QColor(220, 65, 10, a));
+    }
+}
+
+void GameCanvas::renderGearHUD()
 {
     QPainter painter(&screenBuffer);
-    painter.setRenderHint(QPainter::Antialiasing, false);
-
-    int boxSize = 42;
-    int boxX = BUFFER_WIDTH / 2 - boxSize / 2;
+    int boxSize = 36;
+    int boxX = BUFFER_WIDTH - boxSize - 8;
     int boxY = 8;
     QRect hudRect(boxX, boxY, boxSize, boxSize);
 
-    // Box Frame
-    QColor borderColor = QColor(100, 105, 120);
-    QColor bgColor = QColor(20, 22, 32, 210);
-
-    if (isRouletteActive) {
-        // Flashing arcade border while rolling
-        int flashVal = static_cast<int>(globalTime * 14.0) % 3;
-        if (flashVal == 0) borderColor = QColor(255, 215, 0);
-        else if (flashVal == 1) borderColor = QColor(0, 235, 255);
-        else borderColor = QColor(255, 60, 60);
-        bgColor = QColor(35, 30, 50, 230);
-    } else if (heldItem != PlayerItem::NONE) {
-        // Bright golden border for held item
-        borderColor = QColor(255, 215, 0);
-        bgColor = QColor(25, 28, 45, 235);
-    }
-
-    // Background and border
-    painter.fillRect(hudRect, bgColor);
+    QColor borderColor = (heldGear != SurvivalGear::NONE) ? QColor(245, 165, 25) : QColor(75, 78, 88);
+    painter.fillRect(hudRect, QColor(14, 14, 18, 220));
     painter.setPen(QPen(borderColor, 2));
     painter.drawRect(hudRect);
 
-    // Inner highlight border
-    painter.setPen(QPen(QColor(borderColor.red(), borderColor.green(), borderColor.blue(), 100), 1));
-    painter.drawRect(hudRect.adjusted(2, 2, -2, -2));
-
     const auto &atlas = SpriteAtlas::instance();
-
-    if (isRouletteActive) {
-        SpriteType currentType = rouletteItemAt(rouletteIndex);
-        const QImage &img = atlas.getSprite(currentType);
-        painter.drawImage(QRect(boxX + 5, boxY + 5, 32, 32), img);
-
-        // Subtitle
-        QFont hintFont("Arial", 6, QFont::Bold);
-        painter.setFont(hintFont);
-        painter.setPen(QColor(255, 220, 0));
-        painter.drawText(QRect(boxX - 20, boxY + boxSize + 1, boxSize + 40, 12), Qt::AlignCenter, "ROLLING...");
-    } else if (heldItem != PlayerItem::NONE) {
-        SpriteType displayType = SpriteType::QUESTION_BOX;
-        switch (heldItem) {
-        case PlayerItem::MUSHROOM: displayType = SpriteType::MUSHROOM; break;
-        case PlayerItem::ROCKET: displayType = SpriteType::ROCKET; break;
-        case PlayerItem::BANANA: displayType = SpriteType::BANANA; break;
-        case PlayerItem::GREEN_SHELL: displayType = SpriteType::GREEN_SHELL; break;
-        case PlayerItem::INK_BLOOPER: displayType = SpriteType::INK_BLOOPER; break;
-        default: break;
-        }
-
-        const QImage &img = atlas.getSprite(displayType);
-        painter.drawImage(QRect(boxX + 5, boxY + 5, 32, 32), img);
-
-        // Pulsing "[SPACE]" hint
-        QFont hintFont("Arial", 6, QFont::Bold);
-        painter.setFont(hintFont);
-        painter.setPen(QColor(255, 255, 255));
-        painter.drawText(QRect(boxX - 30, boxY + boxSize + 1, boxSize + 60, 12), Qt::AlignCenter, "[SPACE] USE");
+    if (heldGear != SurvivalGear::NONE) {
+        SpriteType st = (heldGear == SurvivalGear::DOZER_RAM) ? SpriteType::SUPPLY_CRATE : SpriteType::SCRAP_CACHE;
+        painter.drawImage(QRect(boxX + 4, boxY + 4, 28, 28), atlas.getSprite(st));
+        painter.setFont(QFont("Arial", 5, QFont::Bold));
+        painter.setPen(QColor(255, 200, 60));
+        painter.drawText(QRect(boxX - 12, boxY + boxSize + 2, boxSize + 24, 10), Qt::AlignCenter,
+                         heldGear == SurvivalGear::DOZER_RAM ? "[E] RAM SHIELD" : "[E] FLARE");
     } else {
-        // Empty slot question mark silhouette
-        QFont emptyFont("Arial", 14, QFont::Bold);
-        painter.setFont(emptyFont);
-        painter.setPen(QColor(70, 75, 90));
-        painter.drawText(hudRect, Qt::AlignCenter, "?");
-
-        QFont hintFont("Arial", 5, QFont::Normal);
-        painter.setFont(hintFont);
-        painter.setPen(QColor(130, 135, 150));
-        painter.drawText(QRect(boxX - 20, boxY + boxSize + 1, boxSize + 40, 10), Qt::AlignCenter, "ITEM");
+        painter.setFont(QFont("Arial", 5, QFont::Bold));
+        painter.setPen(QColor(110, 115, 125));
+        painter.drawText(hudRect, Qt::AlignCenter, "GEAR");
     }
 }
 
-void GameCanvas::renderInkOverlay()
+void GameCanvas::renderEscapeHUD()
 {
-    if (inkTimer <= 0.0) return;
-
     QPainter painter(&screenBuffer);
-    painter.setRenderHint(QPainter::Antialiasing, true);
+    int topW = 152, topX = (BUFFER_WIDTH - topW) / 2;
+    painter.fillRect(QRect(topX, 20, topW, 34), QColor(12, 10, 14, 225));
+    bool urgent = (evacTimer < 20.0 && selectedGameMode != GameMode::TIME_TRIAL);
+    painter.setPen(QPen(urgent ? QColor(245, 50, 45) : QColor(235, 150, 25), 1));
+    painter.drawRect(QRect(topX, 20, topW, 34));
 
-    int alpha = std::min(235, static_cast<int>((inkTimer / 4.5) * 230.0));
-    QColor inkColor(15, 12, 28, alpha);
-    painter.setBrush(inkColor);
-    painter.setPen(Qt::NoPen);
+    QString timerStr = (selectedGameMode == GameMode::TIME_TRIAL)
+        ? QString("TIME %1s").arg(QString::number(raceElapsedTime, 'f', 1))
+        : QString("EVAC %1s").arg(QString::number(evacTimer, 'f', 1));
+    painter.setFont(QFont("Courier New", 10, QFont::Bold));
+    painter.setPen(urgent ? QColor(255, 70, 70) : QColor(255, 195, 55));
+    painter.drawText(QRect(topX, 22, topW, 15), Qt::AlignCenter, timerStr);
 
-    // Blooper ink splatters across windshield
-    painter.drawEllipse(QPoint(110, 80), 38, 35);
-    painter.drawEllipse(QPoint(125, 100), 20, 24);
-    painter.drawEllipse(QPoint(85, 70), 16, 18);
+    int totalRacers = isNetworkRace ? static_cast<int>(remoteKarts.size() + 1)
+                      : (selectedGameMode == GameMode::RANKED_ESCAPE ? static_cast<int>(aiOpponents.size() + 1) : 1);
+    QString rankStr = QString("RANK %1/%2 • %3% • CP %4/2")
+                          .arg(playerPlacement).arg(totalRacers)
+                          .arg(static_cast<int>(splineProgress * 100.0))
+                          .arg(lastCheckpointReached);
+    painter.setFont(QFont("Arial", 6, QFont::Bold));
+    painter.setPen(QColor(210, 215, 220));
+    painter.drawText(QRect(topX, 38, topW, 13), Qt::AlignCenter, rankStr);
 
-    painter.drawEllipse(QPoint(290, 110), 45, 40);
-    painter.drawEllipse(QPoint(265, 130), 22, 26);
-    painter.drawEllipse(QPoint(315, 90), 25, 20);
+    painter.fillRect(QRect(topX + 4, 56, topW - 8, 11), QColor(18, 14, 16, 195));
+    painter.setFont(QFont("Arial", 5, QFont::Bold));
+    painter.setPen(QColor(245, 140, 40));
+    painter.drawText(QRect(topX + 4, 56, topW - 8, 11), Qt::AlignCenter, currentDistrictName);
 
-    painter.drawEllipse(QPoint(190, 140), 32, 30);
-    painter.drawEllipse(QPoint(205, 160), 15, 22);
+    // Pit-Stop Prompt when checkpoint reached in Solo/AI mode
+    if (checkpointPromptTimer > 0.0) {
+        bool pulse = (static_cast<int>(globalTime * 6.0) % 2 == 0);
+        painter.fillRect(QRect(85, 70, 230, 16), QColor(15, 28, 18, 225));
+        painter.setPen(QPen(pulse ? QColor(100, 240, 120) : QColor(245, 185, 45), 1));
+        painter.drawRect(QRect(85, 70, 230, 16));
+        painter.setFont(QFont("Arial", 6, QFont::Bold));
+        painter.setPen(Qt::white);
+        painter.drawText(QRect(85, 70, 230, 16), Qt::AlignCenter, "PRESS [P] FOR CHECKPOINT REPAIR & UPGRADES");
+    }
 
-    painter.drawEllipse(QPoint(60, 160), 28, 26);
-    painter.drawEllipse(QPoint(340, 60), 24, 22);
+    // Bottom-Left: Hull, Nitrous & Scrap
+    painter.fillRect(QRect(8, BUFFER_HEIGHT - 70, 112, 38), QColor(12, 10, 14, 215));
+    painter.setPen(QPen(QColor(70, 72, 82), 1));
+    painter.drawRect(QRect(8, BUFFER_HEIGHT - 70, 112, 38));
+
+    painter.setFont(QFont("Arial", 5, QFont::Bold));
+    painter.setPen(QColor(220, 220, 225));
+    painter.drawText(QRect(12, BUFFER_HEIGHT - 68, 42, 10), Qt::AlignLeft, QString("HULL %1%").arg(static_cast<int>(playerHull.integrity)));
+    double hullFrac = std::clamp(playerHull.integrity / 100.0, 0.0, 1.0);
+    QColor hullCol = (hullFrac > 0.6) ? QColor(65, 200, 90) : (hullFrac > 0.3 ? QColor(245, 170, 25) : QColor(235, 45, 40));
+    painter.fillRect(QRect(54, BUFFER_HEIGHT - 66, 60, 7), QColor(32, 30, 34));
+    painter.fillRect(QRect(54, BUFFER_HEIGHT - 66, static_cast<int>(60 * hullFrac), 7), hullCol);
+
+    painter.setPen(QColor(110, 220, 255));
+    painter.drawText(QRect(12, BUFFER_HEIGHT - 55, 42, 10), Qt::AlignLeft, "NITRO");
+    double nitFrac = std::clamp(nitrousFuel / std::max(1.0, nitrousMaxFuel), 0.0, 1.0);
+    painter.fillRect(QRect(54, BUFFER_HEIGHT - 53, 60, 7), QColor(22, 30, 38));
+    painter.fillRect(QRect(54, BUFFER_HEIGHT - 53, static_cast<int>(60 * nitFrac), 7), QColor(40, 200, 255));
+
+    painter.setPen(QColor(255, 200, 55));
+    painter.drawText(QRect(12, BUFFER_HEIGHT - 44, 104, 10), Qt::AlignLeft,
+                     QString("SCRAP: ₹%1 (+%2)").arg(GarageSystem::instance().getScrapBalance()).arg(scrapCollectedThisRun));
+
+    // Bottom-Right: Speedometer
+    painter.fillRect(QRect(BUFFER_WIDTH - 104, BUFFER_HEIGHT - 62, 96, 28), QColor(12, 10, 14, 215));
+    painter.setPen(QPen(QColor(70, 72, 82), 1));
+    painter.drawRect(QRect(BUFFER_WIDTH - 104, BUFFER_HEIGHT - 62, 96, 28));
+    painter.setFont(QFont("Courier New", 11, QFont::Bold));
+    painter.setPen(QColor(245, 175, 45));
+    painter.drawText(QRect(BUFFER_WIDTH - 100, BUFFER_HEIGHT - 60, 88, 15), Qt::AlignRight,
+                     QString("%1 KM/H").arg(static_cast<int>(std::abs(kartSpeed))));
+
+    if (selectedGameMode != GameMode::TIME_TRIAL) {
+        double gapPct = (splineProgress - collapseWaveProgress) * 100.0;
+        bool dangerClose = (gapPct < 8.0);
+        painter.setFont(QFont("Arial", 5, QFont::Bold));
+        painter.setPen(dangerClose ? QColor(255, 70, 60) : QColor(165, 170, 180));
+        painter.drawText(QRect(BUFFER_WIDTH - 100, BUFFER_HEIGHT - 45, 88, 10), Qt::AlignRight,
+                         dangerClose ? "! COLLAPSE CLOSE !" : QString("QUAKE: -%1%").arg(static_cast<int>(std::max(0.0, gapPct))));
+    }
+}
+
+void GameCanvas::updateMinimapTrackCache()
+{
+    minimapTrackCache = QImage(MinimapHUD::RADAR_SIZE, MinimapHUD::RADAR_SIZE, QImage::Format_ARGB32_Premultiplied);
+    minimapTrackCache.fill(Qt::transparent);
+    if (currentWaypoints.size() < 2) return;
+
+    QPainter p(&minimapTrackCache);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPainterPath path;
+    for (size_t i = 0; i < currentWaypoints.size(); ++i) {
+        double rx = (currentWaypoints[i].x() / static_cast<double>(TRACK_MAP_SIZE)) * MinimapHUD::RADAR_SIZE;
+        double ry = (currentWaypoints[i].y() / static_cast<double>(TRACK_MAP_SIZE)) * MinimapHUD::RADAR_SIZE;
+        if (i == 0) path.moveTo(rx, ry);
+        else path.lineTo(rx, ry);
+    }
+    p.setPen(QPen(QColor(80, 75, 70), 3.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.drawPath(path);
+    p.setPen(QPen(QColor(175, 170, 165), 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.drawPath(path);
+}
+
+void GameCanvas::renderMinimap()
+{
+    QPainter painter(&screenBuffer);
+    QRect box(MinimapHUD::RADAR_X, MinimapHUD::RADAR_Y, MinimapHUD::RADAR_SIZE, MinimapHUD::RADAR_SIZE);
+    painter.fillRect(box, QColor(10, 10, 14, 215));
+    painter.setPen(QPen(QColor(225, 140, 25), 1));
+    painter.drawRect(box);
+
+    if (!minimapTrackCache.isNull()) painter.drawImage(MinimapHUD::RADAR_X, MinimapHUD::RADAR_Y, minimapTrackCache);
+
+    for (const auto &cp : stageCheckpoints) {
+        QPointF pt = MinimapHUD::worldToRadar(0.5 * (cp.x1 + cp.x2), 0.5 * (cp.z1 + cp.z2));
+        painter.fillRect(QRectF(pt.x() - 2, pt.y() - 2, 4, 4),
+                         (lastCheckpointReached >= cp.index) ? QColor(80, 220, 90) : QColor(255, 185, 30));
+    }
+    if (!currentWaypoints.empty()) {
+        QPointF goalPt = MinimapHUD::worldToRadar(currentWaypoints.back().x(), currentWaypoints.back().y());
+        painter.fillRect(QRectF(goalPt.x() - 2.5, goalPt.y() - 2.5, 5, 5), QColor(50, 255, 110));
+    }
+    for (const auto &ai : aiOpponents) {
+        painter.setBrush(ai.kartColor);
+        painter.setPen(Qt::NoPen);
+        painter.drawEllipse(MinimapHUD::worldToRadar(ai.x, ai.z), 2.0, 2.0);
+    }
+    for (const auto &rk : remoteKarts) {
+        painter.setBrush(QColor(0, 225, 255));
+        painter.setPen(Qt::NoPen);
+        painter.drawEllipse(MinimapHUD::worldToRadar(rk.x, rk.z), 2.5, 2.5);
+    }
+    painter.setBrush(QColor(255, 220, 40));
+    painter.setPen(QPen(Qt::black, 1));
+    painter.drawEllipse(MinimapHUD::worldToRadar(kartX, kartZ), 3.0, 3.0);
+}
+
+void GameCanvas::renderWipeTransition()
+{
+    if (wipeTransitionTimer <= 0.0) return;
+    double frac = std::clamp(wipeTransitionTimer / 0.45, 0.0, 1.0);
+    QPainter p(&screenBuffer);
+    int barH = static_cast<int>(frac * (BUFFER_HEIGHT / 2));
+    p.fillRect(0, 0, BUFFER_WIDTH, barH, QColor(6, 5, 8));
+    p.fillRect(0, BUFFER_HEIGHT - barH, BUFFER_WIDTH, barH, QColor(6, 5, 8));
 }
 
 void GameCanvas::paintEvent(QPaintEvent *)
 {
     QPainter painter(this);
-    // Nearest-neighbor scaling to maintain authentic pixel graphics
     painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
     painter.drawImage(rect(), screenBuffer);
 }
-
-// -------------------------------------------------------------
-// CELEBRATION & FINISH ANIMATION
-// -------------------------------------------------------------
 
 void GameCanvas::triggerCelebration(const QString &title, const QString &subtitle)
 {
@@ -2334,524 +2695,398 @@ void GameCanvas::triggerCelebration(const QString &title, const QString &subtitl
     celebrationTimer = 0.0;
     celebrationTitle = title;
     celebrationSubtitle = subtitle;
-    flashIntensity = 0.85;
-
-    // Generate 120 confetti particles bursting from both bottom corners
-    confetti.clear();
-    const QColor colors[] = {
-        QColor(255, 50, 50),   // Red
-        QColor(255, 215, 0),   // Gold
-        QColor(0, 230, 255),   // Cyan
-        QColor(60, 255, 100),  // Green
-        QColor(255, 105, 180), // Pink
-        QColor(255, 255, 255), // Pure White
-        QColor(180, 80, 255),  // Purple
-        QColor(255, 140, 0)    // Orange
-    };
-    int numColors = sizeof(colors) / sizeof(colors[0]);
-
-    for (int i = 0; i < 120; ++i) {
-        ConfettiParticle p;
-        bool leftSide = (i % 2 == 0);
-        p.x = leftSide ? (rand() % 40) : (BUFFER_WIDTH - (rand() % 40));
-        p.y = BUFFER_HEIGHT - 20 - (rand() % 50);
-
-        double launchAngle = leftSide
-            ? (-(35.0 + (rand() % 45)) * M_PI / 180.0)
-            : (-(180.0 - (35.0 + (rand() % 45))) * M_PI / 180.0);
-
-        double speed = 180.0 + (rand() % 160);
-        p.vx = std::cos(launchAngle) * speed;
-        p.vy = std::sin(launchAngle) * speed;
-        p.w = 4.0 + (rand() % 4);
-        p.h = 2.5 + (rand() % 4);
-        p.angle = (rand() % 360) * M_PI / 180.0;
-        p.vRot = ((rand() % 240) - 120) * M_PI / 180.0;
-        p.color = colors[rand() % numColors];
-        confetti.push_back(p);
-    }
+    flashIntensity = 0.35;
 }
 
 void GameCanvas::updateCelebration(double dt)
 {
     if (!isCelebrationActive) return;
-
     celebrationTimer += dt;
-    flashIntensity = std::max(0.0, flashIntensity - dt * 2.8);
-
-    // Gravity and physics on confetti
-    for (auto &p : confetti) {
-        p.vy += 160.0 * dt; // gravity
-        p.vx *= 0.985;      // air resistance
-        p.x += p.vx * dt;
-        p.y += p.vy * dt;
-        p.angle += p.vRot * dt;
-    }
-
-    if (isRaceFinished) {
-        // Keep victory banner active and looping when game is won
-        if (celebrationTimer >= celebrationDuration - 0.4) {
-            celebrationTimer = 0.5;
-        }
-    } else {
-        if (celebrationTimer >= celebrationDuration) {
-            isCelebrationActive = false;
-            confetti.clear();
-        }
-    }
+    flashIntensity = std::max(0.0, flashIntensity - dt * 2.5);
+    if (!isRaceFinished && celebrationTimer >= celebrationDuration) isCelebrationActive = false;
 }
 
 void GameCanvas::renderCelebration()
 {
     if (!isCelebrationActive) return;
+    QPainter painter(&screenBuffer);
+    int bannerW = 286, bannerH = 40;
+    QRect r((BUFFER_WIDTH - bannerW) / 2, 88, bannerW, bannerH);
+    painter.fillRect(r, QColor(14, 10, 12, 225));
+    painter.setPen(QPen(QColor(245, 145, 25), 2));
+    painter.drawRect(r);
 
-    // 1. Screen Golden Flash
-    if (flashIntensity > 0.02) {
-        QRgb *pixels = reinterpret_cast<QRgb*>(screenBuffer.bits());
-        int boost = static_cast<int>(flashIntensity * 130);
-        for (int i = 0; i < BUFFER_WIDTH * BUFFER_HEIGHT; ++i) {
-            int r = qMin(255, qRed(pixels[i]) + boost);
-            int g = qMin(255, qGreen(pixels[i]) + boost);
-            int b = qMin(255, qBlue(pixels[i]) + (boost / 3));
-            pixels[i] = qRgb(r, g, b);
-        }
-    }
+    painter.setFont(QFont("Courier New", 10, QFont::Bold));
+    painter.setPen(QColor(255, 195, 50));
+    painter.drawText(QRect(r.x(), r.y() + 4, bannerW, 18), Qt::AlignCenter, celebrationTitle);
+    painter.setFont(QFont("Arial", 6, QFont::Bold));
+    painter.setPen(QColor(215, 220, 225));
+    painter.drawText(QRect(r.x(), r.y() + 22, bannerW, 14), Qt::AlignCenter, celebrationSubtitle);
+}
 
+// -------------------------------------------------------------
+// CHECKPOINT PIT-STOP & STAGE TRANSITION OVERLAY
+// -------------------------------------------------------------
+
+void GameCanvas::renderCheckpointPitOverlay()
+{
     QPainter painter(&screenBuffer);
     painter.setRenderHint(QPainter::Antialiasing, false);
 
-    // 2. Render Confetti Particles
-    for (const auto &p : confetti) {
-        if (p.x < -10 || p.x > BUFFER_WIDTH + 10 || p.y > BUFFER_HEIGHT + 10) continue;
-        painter.save();
-        painter.translate(p.x, p.y);
-        painter.rotate(p.angle * 180.0 / M_PI);
-        painter.setPen(QPen(QColor(15, 15, 15), 1));
-        painter.setBrush(p.color);
-        painter.drawRect(QRectF(-p.w / 2.0, -p.h / 2.0, p.w, p.h));
-        painter.restore();
+    painter.fillRect(0, 0, BUFFER_WIDTH, BUFFER_HEIGHT, QColor(8, 7, 10, 200));
+
+    QRect box(24, 18, BUFFER_WIDTH - 48, BUFFER_HEIGHT - 36);
+    painter.fillRect(box, QColor(14, 13, 17, 245));
+    painter.setPen(QPen(QColor(235, 145, 30), 2));
+    painter.drawRect(box);
+
+    auto &garage = GarageSystem::instance();
+    const auto &ups = garage.upgrades();
+
+    QString header = pitIsStageTransition
+        ? QString("SECTOR %1 CLEARED — NEXT CORRIDOR READY").arg(static_cast<int>(currentStage) + 1)
+        : QString("CHECKPOINT %1 RELAY BAY — FIELD REPAIRS").arg(pitCheckpointIndex);
+
+    painter.setFont(QFont("Courier New", 9, QFont::Bold));
+    painter.setPen(QColor(245, 175, 45));
+    painter.drawText(QRect(32, 24, BUFFER_WIDTH - 64, 16), Qt::AlignCenter, header);
+
+    painter.setFont(QFont("Arial", 7, QFont::Bold));
+    painter.setPen(QColor(215, 220, 225));
+    painter.drawText(QRect(34, 42, BUFFER_WIDTH - 68, 14), Qt::AlignCenter,
+                     QString("HULL: %1%   •   NITRO: %2%   •   SCRAP: ₹%3")
+                         .arg(static_cast<int>(playerHull.integrity))
+                         .arg(static_cast<int>((nitrousFuel / std::max(1.0, nitrousMaxFuel)) * 100.0))
+                         .arg(garage.getScrapBalance()));
+
+    struct PitOption { QString label; QString cost; };
+    int repMissing = static_cast<int>(std::ceil(100.0 - playerHull.integrity));
+    int repCost = std::min(60, std::max(25, repMissing));
+    PitOption opts[6] = {
+        { "[1] FIELD WELD (+45% HULL)", repMissing > 0 ? QString("₹%1").arg(repCost) : "FULL" },
+        { "[2] REFILL NITROUS TANK",    nitrousFuel < nitrousMaxFuel ? "₹30" : "FULL" },
+        { QString("[3] ARMOR LV %1").arg(ups.armorLevel),           ups.armorLevel < 5 ? QString("₹%1").arg(GarageSystem::upgradeCost(ups.armorLevel)) : "MAX" },
+        { QString("[4] ENGINE LV %1").arg(ups.engineLevel),         ups.engineLevel < 5 ? QString("₹%1").arg(GarageSystem::upgradeCost(ups.engineLevel)) : "MAX" },
+        { QString("[5] SUSPENSION LV %1").arg(ups.suspensionLevel), ups.suspensionLevel < 5 ? QString("₹%1").arg(GarageSystem::upgradeCost(ups.suspensionLevel)) : "MAX" },
+        { QString("[6] NITROUS CAP LV %1").arg(ups.nitrousLevel),   ups.nitrousLevel < 5 ? QString("₹%1").arg(GarageSystem::upgradeCost(ups.nitrousLevel)) : "MAX" }
+    };
+
+    int listW = isNetworkRace ? 210 : (BUFFER_WIDTH - 76);
+    for (int i = 0; i < 6; ++i) {
+        int ry = 62 + i * 26;
+        bool sel = (pitFocusRow == i);
+        QRect rr(36, ry, listW, 22);
+        painter.fillRect(rr, sel ? QColor(225, 120, 25, 55) : QColor(22, 20, 26));
+        painter.setPen(QPen(sel ? QColor(245, 175, 45) : QColor(55, 52, 60), 1));
+        painter.drawRect(rr);
+
+        painter.setFont(QFont("Arial", 6, QFont::Bold));
+        painter.setPen(Qt::white);
+        painter.drawText(QRect(42, ry + 4, listW - 55, 14), Qt::AlignLeft, opts[i].label);
+        painter.setPen(QColor(255, 200, 65));
+        painter.drawText(QRect(36, ry + 4, listW - 8, 14), Qt::AlignRight, opts[i].cost);
     }
 
-    // 3. Top Checkered Flag Ribbon
-    int squareSize = 7;
-    int scrollOffset = static_cast<int>(celebrationTimer * 30.0) % (squareSize * 2);
+    // In LAN Multiplayer, show live convoy synchronization panel on right
+    if (isNetworkRace && networkManager) {
+        QRect syncBox(254, 62, 114, 152);
+        painter.fillRect(syncBox, QColor(18, 17, 22));
+        painter.setPen(QPen(QColor(80, 75, 85), 1));
+        painter.drawRect(syncBox);
 
-    for (int x = -squareSize * 2; x < BUFFER_WIDTH + squareSize * 2; x += squareSize) {
-        for (int row = 0; row < 2; ++row) {
-            int drawX = x + scrollOffset;
-            int drawY = 8 + row * squareSize;
-            bool isWhite = ((x / squareSize + row) % 2 == 0);
-            painter.fillRect(drawX, drawY, squareSize, squareSize, isWhite ? QColor(250, 250, 255) : QColor(20, 20, 25));
+        painter.setFont(QFont("Arial", 6, QFont::Bold));
+        painter.setPen(QColor(245, 175, 45));
+        painter.drawText(QRect(256, 66, 110, 14), Qt::AlignCenter, "CONVOY SYNC");
+
+        const auto &plist = networkManager->getPlayers();
+        for (size_t i = 0; i < plist.size() && i < 4; ++i) {
+            int py = 84 + static_cast<int>(i) * 30;
+            painter.setFont(QFont("Arial", 6, QFont::Bold));
+            painter.setPen(Qt::white);
+            painter.drawText(QRect(260, py, 102, 12), Qt::AlignLeft, plist[i].name);
+
+            QString stTxt = plist[i].isEliminated ? "ELIMINATED"
+                : (plist[i].checkpointReady && plist[i].checkpointIdx == pitCheckpointIndex ? "READY" : "UPGRADING...");
+            QColor stCol = plist[i].isEliminated ? QColor(235, 60, 55)
+                : (stTxt == "READY" ? QColor(90, 230, 110) : QColor(245, 175, 45));
+            painter.setFont(QFont("Arial", 5, QFont::Bold));
+            painter.setPen(stCol);
+            painter.drawText(QRect(260, py + 12, 102, 10), Qt::AlignLeft, stTxt);
         }
     }
-    // Gold borders for ribbon
-    painter.setPen(QColor(255, 215, 0));
-    painter.drawLine(0, 7, BUFFER_WIDTH, 7);
-    painter.drawLine(0, 8 + 2 * squareSize, BUFFER_WIDTH, 8 + 2 * squareSize);
 
-    // 4. Retro Center Banner with Pop-in Elastic Scaling
-    double scale = 1.0;
-    if (celebrationTimer < 0.25) {
-        scale = celebrationTimer / 0.25; // Elastic zoom in
-    } else {
-        scale = 1.0 + 0.04 * std::sin((celebrationTimer - 0.25) * 8.0); // Heartbeat pulse
+    if (pitStatusTimer > 0.0 && !pitStatusMsg.isEmpty()) {
+        painter.setFont(QFont("Arial", 6, QFont::Bold));
+        painter.setPen(QColor(110, 240, 130));
+        painter.drawText(QRect(36, 224, BUFFER_WIDTH - 72, 14), Qt::AlignCenter, pitStatusMsg);
     }
 
-    painter.save();
-    painter.translate(BUFFER_WIDTH / 2, 85);
-    painter.scale(scale, scale);
-
-    int bannerW = 280;
-    int bannerH = 68;
-    QRect bannerRect(-bannerW / 2, -bannerH / 2, bannerW, bannerH);
-
-    // Banner background with thick arcade border
-    painter.setPen(QPen(QColor(255, 215, 0), 2)); // Gold outer border
-    painter.setBrush(QColor(15, 18, 30, 230));   // Dark translucent arcade blue
-    painter.drawRoundedRect(bannerRect, 6, 6);
-
-    // Inner orange highlight border
-    painter.setPen(QPen(QColor(255, 120, 0), 1));
-    painter.setBrush(Qt::NoBrush);
-    painter.drawRoundedRect(bannerRect.adjusted(3, 3, -3, -3), 4, 4);
-
-    // Title Text (with 3D drop shadow)
-    QFont titleFont("Courier New", 14, QFont::Black);
-    titleFont.setBold(true);
-    painter.setFont(titleFont);
-
-    // Shadow
-    painter.setPen(QColor(10, 10, 15));
-    painter.drawText(QRect(-bannerW / 2 + 2, -bannerH / 2 + 6, bannerW, 32), Qt::AlignCenter, celebrationTitle);
-
-    // Foreground Title
-    QColor titleColor = (celebrationTitle.contains("FINAL") || celebrationTitle.contains("START"))
-        ? QColor(255, 80, 80)
-        : QColor(255, 220, 0);
-    painter.setPen(titleColor);
-    painter.drawText(QRect(-bannerW / 2, -bannerH / 2 + 4, bannerW, 32), Qt::AlignCenter, celebrationTitle);
-
-    // Subtitle Text
-    QFont subFont("Arial", 9, QFont::Bold);
-    painter.setFont(subFont);
-    painter.setPen(QColor(10, 10, 15));
-    painter.drawText(QRect(-bannerW / 2 + 1, -bannerH / 2 + 37, bannerW, 24), Qt::AlignCenter, celebrationSubtitle);
-
-    painter.setPen(QColor(0, 240, 255)); // Bright Neon Cyan
-    painter.drawText(QRect(-bannerW / 2, -bannerH / 2 + 36, bannerW, 24), Qt::AlignCenter, celebrationSubtitle);
-
-    painter.restore();
+    painter.setFont(QFont("Arial", 7, QFont::Bold));
+    if (isNetworkRace) {
+        painter.setPen(pitLocalReady ? QColor(90, 235, 115) : QColor(245, 185, 50));
+        painter.drawText(QRect(36, 244, BUFFER_WIDTH - 72, 16), Qt::AlignCenter,
+                         pitLocalReady ? "READY! WAITING FOR ALL SURVIVORS..." : "[SPACE / ENTER] READY FOR SIMULTANEOUS ROLLOUT");
+    } else {
+        painter.setPen(QColor(100, 235, 120));
+        painter.drawText(QRect(36, 244, BUFFER_WIDTH - 72, 16), Qt::AlignCenter,
+                         "[1-6] Buy Repair/Upgrade  •  [SPACE / ENTER] ROLL OUT!");
+    }
 }
+
+// -------------------------------------------------------------
+// DARK MENUS: TITLE, GARAGE & RESULTS
+// -------------------------------------------------------------
 
 void GameCanvas::renderTitleMenu()
 {
     QPainter painter(&screenBuffer);
     painter.setRenderHint(QPainter::Antialiasing, false);
 
-    // 1. Midnight Sky & Ground Horizon
     QLinearGradient skyGrad(0, 0, 0, HORIZON_Y);
-    skyGrad.setColorAt(0.0, QColor(6, 10, 24));
-    skyGrad.setColorAt(1.0, QColor(22, 32, 56));
+    skyGrad.setColorAt(0.0, QColor(5, 4, 8));
+    skyGrad.setColorAt(1.0, QColor(44, 15, 10));
     painter.fillRect(QRect(0, 0, BUFFER_WIDTH, HORIZON_Y), skyGrad);
 
     QLinearGradient groundGrad(0, HORIZON_Y, 0, BUFFER_HEIGHT);
-    groundGrad.setColorAt(0.0, QColor(16, 8, 28));
-    groundGrad.setColorAt(1.0, QColor(36, 14, 48));
+    groundGrad.setColorAt(0.0, QColor(20, 11, 10));
+    groundGrad.setColorAt(1.0, QColor(9, 8, 10));
     painter.fillRect(QRect(0, HORIZON_Y, BUFFER_WIDTH, BUFFER_HEIGHT - HORIZON_Y), groundGrad);
 
-    // Dynamic Perspective Grid on ground
-    painter.setPen(QColor(0, 229, 255, 60)); // Cyan perspective grid
+    painter.setBrush(QColor(12, 10, 12));
+    painter.setPen(Qt::NoPen);
+    painter.drawRect(36, HORIZON_Y - 58, 14, 58);
+    painter.drawRect(302, HORIZON_Y - 46, 8, 46);
+    painter.drawRect(352, HORIZON_Y - 46, 8, 46);
+    painter.setPen(QPen(QColor(18, 14, 16), 2));
+    painter.drawLine(275, HORIZON_Y, 306, HORIZON_Y - 44);
+    painter.drawLine(306, HORIZON_Y - 44, 356, HORIZON_Y - 44);
+    painter.drawLine(356, HORIZON_Y - 44, 385, HORIZON_Y);
+
+    painter.setPen(QColor(215, 95, 25, 45));
     for (int i = 0; i < 14; ++i) {
-        int groundX = -100 + i * 46;
-        painter.drawLine(BUFFER_WIDTH / 2, HORIZON_Y, groundX, BUFFER_HEIGHT);
+        painter.drawLine(BUFFER_WIDTH / 2, HORIZON_Y, -100 + i * 46, BUFFER_HEIGHT);
     }
-    // Animated horizontal scanlines scrolling down
-    double gridScroll = std::fmod(globalTime * 45.0, 18.0);
+    double gridScroll = std::fmod(globalTime * 40.0, 18.0);
     for (int y = HORIZON_Y; y < BUFFER_HEIGHT; y += 12) {
         int lineY = y + static_cast<int>(gridScroll);
         if (lineY > HORIZON_Y && lineY < BUFFER_HEIGHT) {
-            int alpha = std::min(120, static_cast<int>((lineY - HORIZON_Y) * 0.9));
-            painter.setPen(QColor(0, 229, 255, alpha));
+            painter.setPen(QColor(225, 110, 25, 65));
             painter.drawLine(0, lineY, BUFFER_WIDTH, lineY);
         }
     }
 
-    // Glowing Neon Horizon Divider
-    painter.setPen(QPen(QColor(0, 229, 255), 2));
-    painter.drawLine(0, HORIZON_Y, BUFFER_WIDTH, HORIZON_Y);
-
-    // Animated Top Checkered Racing Banner
-    int checkSize = 10;
-    double bannerOffset = std::fmod(globalTime * 25.0, static_cast<double>(checkSize * 2));
-    for (int x = -checkSize * 2; x < BUFFER_WIDTH + checkSize * 2; x += checkSize) {
-        int bx = static_cast<int>(x + bannerOffset);
-        bool even = ((x / checkSize) % 2 == 0);
-        painter.fillRect(QRect(bx, 0, checkSize, 6), even ? QColor(255, 215, 0) : QColor(20, 20, 24));
-        painter.fillRect(QRect(bx, 6, checkSize, 6), even ? QColor(20, 20, 24) : QColor(255, 215, 0));
+    int stripeW = 12;
+    double offset = std::fmod(globalTime * 22.0, static_cast<double>(stripeW * 2));
+    for (int x = -stripeW * 2; x < BUFFER_WIDTH + stripeW * 2; x += stripeW) {
+        int bx = static_cast<int>(x + offset);
+        bool even = ((x / stripeW) % 2 == 0);
+        painter.fillRect(QRect(bx, 0, stripeW, 7), even ? QColor(225, 145, 20) : QColor(18, 18, 20));
     }
 
-    // 2. Extruded 3D Title Banner
-    QFont titleFont("Arial", 22, QFont::Black);
-    painter.setFont(titleFont);
-    // Black Shadow
-    painter.setPen(QColor(10, 5, 20));
-    painter.drawText(QRect(2, 28, BUFFER_WIDTH, 40), Qt::AlignCenter, "RETRO KART 3D");
-    painter.drawText(QRect(1, 27, BUFFER_WIDTH, 40), Qt::AlignCenter, "RETRO KART 3D");
-    // Crimson Rim
-    painter.setPen(QColor(220, 30, 25));
-    painter.drawText(QRect(1, 25, BUFFER_WIDTH, 40), Qt::AlignCenter, "RETRO KART 3D");
-    // Golden Front Face
-    painter.setPen(QColor(255, 225, 30));
-    painter.drawText(QRect(0, 24, BUFFER_WIDTH, 40), Qt::AlignCenter, "RETRO KART 3D");
+    painter.setFont(QFont("Courier New", 20, QFont::Black));
+    painter.setPen(QColor(8, 5, 6));
+    painter.drawText(QRect(2, 20, BUFFER_WIDTH, 32), Qt::AlignCenter, "KOLKATA: LAST EXIT");
+    painter.setPen(QColor(185, 42, 22));
+    painter.drawText(QRect(1, 19, BUFFER_WIDTH, 32), Qt::AlignCenter, "KOLKATA: LAST EXIT");
+    painter.setPen(QColor(245, 175, 45));
+    painter.drawText(QRect(0, 18, BUFFER_WIDTH, 32), Qt::AlignCenter, "KOLKATA: LAST EXIT");
 
-    // Subtitle
-    QFont subFont("Arial", 7, QFont::Bold);
-    painter.setFont(subFont);
-    painter.setPen(QColor(0, 240, 255));
-    painter.drawText(QRect(0, 68, BUFFER_WIDTH, 14), Qt::AlignCenter, "★ 16-BIT ARCADE GRAND PRIX • MODE-7 ★");
+    painter.setFont(QFont("Arial", 6, QFont::Bold));
+    painter.setPen(QColor(200, 110, 65));
+    painter.drawText(QRect(0, 50, BUFFER_WIDTH, 14), Qt::AlignCenter, "02:40 IST • 3-SECTOR CONTINUOUS EVACUATION");
 
-    // 3. Interactive Menu Box
-    int boxX = 75;
-    int boxY = 94;
-    int boxW = 250;
-    int boxH = 132;
-    painter.setBrush(QColor(14, 18, 32, 235));
-    painter.setPen(QPen(QColor(255, 215, 0), 2));
-    painter.drawRoundedRect(QRect(boxX, boxY, boxW, boxH), 8, 8);
+    int boxX = 62, boxY = 74, boxW = 276, boxH = 148;
+    painter.setBrush(QColor(12, 11, 14, 238));
+    painter.setPen(QPen(QColor(225, 130, 25), 2));
+    painter.drawRoundedRect(QRect(boxX, boxY, boxW, boxH), 6, 6);
 
-    // Inner subtle border
-    painter.setPen(QPen(QColor(255, 255, 255, 40), 1));
-    painter.drawRoundedRect(QRect(boxX + 3, boxY + 3, boxW - 6, boxH - 6), 6, 6);
-
-    // Menu Title
     painter.setFont(QFont("Arial", 7, QFont::Bold));
-    painter.setPen(QColor(255, 215, 0));
-    painter.drawText(QRect(boxX, boxY + 8, boxW, 14), Qt::AlignCenter, "— SELECT GAME MODE —");
+    painter.setPen(QColor(245, 175, 45));
+    painter.drawText(QRect(boxX, boxY + 8, boxW, 14), Qt::AlignCenter, "— SELECT EVACUATION MODE —");
 
-    // Menu Items
     const char* menuOptions[3] = {
-        "1. PLAY VS AI (GRAND PRIX)",
-        "2. MULTIPLAYER (LAN)",
-        "3. PRACTICE (TIME TRIAL)"
+        "1. CONTINUOUS ESCAPE (VS AI RIVALS)",
+        "2. LAN CONVOY ESCAPE (MULTIPLAYER)",
+        "3. SURVIVAL TIME TRIAL (SOLO)"
+    };
+    const char* menuDescs[3] = {
+        "All 3 Kolkata sectors • Pit-stop repairs at checkpoints",
+        "Wait & upgrade together at checkpoints • Synced rollout",
+        "Long-route solo survival to farm Scrap (₹)"
     };
 
-    int itemStartY = boxY + 28;
-    int itemSpacing = 32;
-    int chevronOffset = static_cast<int>(3.0 * std::sin(globalTime * 8.0));
-
     for (int i = 0; i < 3; ++i) {
-        int itemY = itemStartY + i * itemSpacing;
-        bool isSelected = (menuIndex == i);
-
-        if (isSelected) {
-            // Glowing pulsing highlight bar
-            int alpha = static_cast<int>(45 + 25 * std::sin(globalTime * 8.0));
-            painter.fillRect(QRect(boxX + 12, itemY - 3, boxW - 24, 26), QColor(255, 215, 0, alpha));
-            painter.setPen(QPen(QColor(255, 215, 0), 1));
-            painter.drawRect(QRect(boxX + 12, itemY - 3, boxW - 24, 26));
-
-            // Animated Chevrons
+        int iy = boxY + 28 + i * 38;
+        bool sel = (menuIndex == i);
+        if (sel) {
+            painter.fillRect(QRect(boxX + 12, iy, boxW - 24, 32), QColor(225, 110, 20, 55));
+            painter.setPen(QPen(QColor(245, 165, 30), 1));
+            painter.drawRect(QRect(boxX + 12, iy, boxW - 24, 32));
             painter.setFont(QFont("Arial", 8, QFont::Bold));
-            painter.setPen(QColor(255, 225, 30));
-            painter.drawText(QRect(boxX + 16 + chevronOffset, itemY + 2, 20, 16), Qt::AlignLeft | Qt::AlignVCenter, "▶▶");
-            painter.drawText(QRect(boxX + boxW - 36 - chevronOffset, itemY + 2, 20, 16), Qt::AlignRight | Qt::AlignVCenter, "◀◀");
-
-            // Text
-            painter.setFont(QFont("Arial", 9, QFont::Bold));
-            painter.setPen(Qt::white);
-            painter.drawText(QRect(boxX + 38, itemY + 2, boxW - 76, 16), Qt::AlignCenter, menuOptions[i]);
+            painter.setPen(QColor(255, 220, 120));
+            painter.drawText(QRect(boxX + 16, iy + 3, boxW - 32, 14), Qt::AlignCenter, menuOptions[i]);
+            painter.setFont(QFont("Arial", 5, QFont::Normal));
+            painter.setPen(QColor(195, 175, 155));
+            painter.drawText(QRect(boxX + 16, iy + 18, boxW - 32, 11), Qt::AlignCenter, menuDescs[i]);
         } else {
-            // Unselected Item
-            painter.setFont(QFont("Arial", 9, QFont::Bold));
-            painter.setPen(QColor(155, 165, 185));
-            painter.drawText(QRect(boxX + 20, itemY + 2, boxW - 40, 16), Qt::AlignCenter, menuOptions[i]);
+            painter.setFont(QFont("Arial", 8, QFont::Bold));
+            painter.setPen(QColor(135, 130, 130));
+            painter.drawText(QRect(boxX + 16, iy + 8, boxW - 32, 14), Qt::AlignCenter, menuOptions[i]);
         }
     }
 
-    // 4. Footer Hint Bar
-    QRect hintRect(35, 240, 330, 38);
-    painter.setBrush(QColor(16, 20, 32, 220));
-    painter.setPen(QPen(QColor(50, 60, 80), 1));
-    painter.drawRoundedRect(hintRect, 6, 6);
-
+    painter.fillRect(QRect(26, 234, BUFFER_WIDTH - 52, 46), QColor(12, 11, 14, 225));
+    painter.setPen(QPen(QColor(70, 55, 45), 1));
+    painter.drawRect(QRect(26, 234, BUFFER_WIDTH - 52, 46));
     painter.setFont(QFont("Arial", 6, QFont::Bold));
-    painter.setPen(QColor(255, 215, 0));
-    painter.drawText(QRect(35, 244, 330, 14), Qt::AlignCenter, "▲/▼ or W/S: NAVIGATE  •  ENTER / SPACE: SELECT");
-    painter.setPen(QColor(0, 230, 255));
-    painter.drawText(QRect(35, 258, 330, 14), Qt::AlignCenter, "PRESS 1, 2, 3 FOR DIRECT SELECTION");
-
-    // Credits
-    painter.setFont(QFont("Arial", 5));
-    painter.setPen(QColor(110, 120, 145));
-    painter.drawText(QRect(0, 284, BUFFER_WIDTH, 12), Qt::AlignCenter, "RETROKART 3D ENGINE • 60 FPS • SCANLINE MODE-7");
+    painter.setPen(QColor(235, 165, 45));
+    painter.drawText(QRect(26, 238, BUFFER_WIDTH - 52, 14), Qt::AlignCenter,
+                     "W/S: NAVIGATE  •  ENTER: GARAGE  •  [C]: REPLAY INTRO STORY");
+    painter.setPen(QColor(175, 170, 165));
+    painter.drawText(QRect(26, 256, BUFFER_WIDTH - 52, 14), Qt::AlignCenter,
+                     QString("SALVAGE SCRAP BALANCE: ₹%1").arg(GarageSystem::instance().getScrapBalance()));
 }
 
-void GameCanvas::renderCharacterSelect()
+void GameCanvas::renderGarageScreen()
 {
     QPainter painter(&screenBuffer);
     painter.setRenderHint(QPainter::Antialiasing, false);
 
-    // 1. Background
-    painter.fillRect(QRect(0, 0, BUFFER_WIDTH, BUFFER_HEIGHT), QColor(16, 20, 32));
+    painter.fillRect(QRect(0, 0, BUFFER_WIDTH, BUFFER_HEIGHT), QColor(12, 11, 14));
+    painter.setPen(QPen(QColor(225, 130, 25), 2));
+    painter.drawLine(0, 36, BUFFER_WIDTH, 36);
+    painter.drawLine(0, 252, BUFFER_WIDTH, 252);
 
-    // Top & Bottom Accent Lines
-    painter.setPen(QPen(QColor(255, 215, 0), 2));
-    painter.drawLine(0, 44, BUFFER_WIDTH, 44);
-    painter.drawLine(0, 226, BUFFER_WIDTH, 226);
+    auto &garage = GarageSystem::instance();
+    const auto &ups = garage.upgrades();
 
-    // 2. Title & Mode Banner
-    QFont titleFont("Arial", 11, QFont::Bold);
-    painter.setFont(titleFont);
-    painter.setPen(QColor(0, 0, 0, 180));
-    painter.drawText(QRect(1, 7, BUFFER_WIDTH, 18), Qt::AlignCenter, "SELECT YOUR RACER");
-    painter.setPen(QColor(255, 215, 0));
-    painter.drawText(QRect(0, 6, BUFFER_WIDTH, 18), Qt::AlignCenter, "SELECT YOUR RACER");
+    painter.setFont(QFont("Courier New", 11, QFont::Bold));
+    painter.setPen(QColor(245, 175, 45));
+    painter.drawText(QRect(10, 4, 240, 18), Qt::AlignLeft | Qt::AlignVCenter, "GARAGE: RIG & UPGRADES");
 
-    // Mode subtitle
-    QString modeStr;
-    QColor modeColor;
-    if (selectedGameMode == GameMode::PLAY_VS_AI) {
-        modeStr = "MODE: PLAY VS AI (GRAND PRIX)";
-        modeColor = QColor(255, 200, 50);
-    } else if (selectedGameMode == GameMode::MULTIPLAYER) {
-        modeStr = (charSelectPhase == 0) ? "MODE: 2P MULTIPLAYER — PLAYER 1 SELECT" : "MODE: 2P MULTIPLAYER — PLAYER 2 SELECT";
-        modeColor = (charSelectPhase == 0) ? QColor(255, 215, 0) : QColor(0, 230, 255);
-    } else {
-        modeStr = "MODE: PRACTICE (SOLO TIME TRIAL)";
-        modeColor = QColor(80, 240, 120);
-    }
+    painter.setFont(QFont("Arial", 8, QFont::Bold));
+    painter.setPen(QColor(255, 210, 65));
+    painter.drawText(QRect(240, 4, 150, 18), Qt::AlignRight | Qt::AlignVCenter,
+                     QString("SCRAP: ₹%1").arg(garage.getScrapBalance()));
 
-    QFont subFont("Arial", 6, QFont::Bold);
-    painter.setFont(subFont);
-    painter.setPen(modeColor);
-    painter.drawText(QRect(0, 22, BUFFER_WIDTH, 11), Qt::AlignCenter, modeStr);
-
-    QString trackName = (currentLevel == TrackLevel::DONUT_PLAINS) ? "DONUT PLAINS" :
-                        (currentLevel == TrackLevel::CHOCO_VALLEY) ? "CHOCO VALLEY" : "BOWSER'S CASTLE";
-    painter.setPen(QColor(160, 180, 210));
-    painter.drawText(QRect(0, 32, BUFFER_WIDTH, 11), Qt::AlignCenter, QString("COURSE: %1  (KEYS 1-3 TO CHANGE)").arg(trackName));
+    QString stageLabel = (currentStage == KolkataStage::GARIAHAT_COLLAPSE)
+        ? "START SECTOR 1 [MEDIUM]: GARIAHAT COLLAPSE"
+        : (currentStage == KolkataStage::PARK_STREET_RUINS
+            ? "START SECTOR 2 [HARD]: PARK STREET & MAIDAN"
+            : "START SECTOR 3 [INSANE]: HOWRAH BRIDGE RUIN");
+    painter.setFont(QFont("Arial", 6, QFont::Bold));
+    painter.setPen(currentStage == KolkataStage::HOWRAH_BRIDGE ? QColor(255, 75, 60) : QColor(235, 165, 55));
+    painter.drawText(QRect(10, 21, BUFFER_WIDTH - 20, 13), Qt::AlignLeft,
+                     stageLabel + "   [KEYS 1-3 TO SWITCH]");
 
     const auto &atlas = SpriteAtlas::instance();
-    double t = globalTime;
+    const VehicleDef &v = vehicles[selectedVehicleP1];
+    QRect rigBox(10, 44, 176, 200);
+    painter.fillRect(rigBox, QColor(18, 17, 22));
+    painter.setPen(QPen(QColor(225, 130, 25), 1));
+    painter.drawRect(rigBox);
 
-    // 3. Render 4 Character Cards
-    int cardY = 48;
-    int cardW = 88;
-    int cardH = 174;
-    int gap = 8;
-    int startX = (BUFFER_WIDTH - (4 * cardW + 3 * gap)) / 2; // 12 px
+    painter.fillRect(QRect(11, 45, 174, 18), v.primaryColor);
+    painter.setFont(QFont("Arial", 7, QFont::Bold));
+    painter.setPen(Qt::black);
+    painter.drawText(QRect(11, 45, 174, 18), Qt::AlignCenter, QString("◄ %1 ►").arg(v.name));
 
-    for (int i = 0; i < 4; ++i) {
-        int cx = startX + i * (cardW + gap);
-        QRect cardRect(cx, cardY, cardW, cardH);
-        const auto &c = characters[i];
-
-        bool isP1Here = (selectedCharP1 == i);
-        bool isP2Here = (selectedGameMode == GameMode::MULTIPLAYER && selectedCharP2 == i && charSelectPhase == 1);
-        bool isP1Locked = (selectedGameMode == GameMode::MULTIPLAYER && charSelectPhase == 1 && selectedCharP1 == i);
-
-        // Card Background Fill
-        painter.fillRect(cardRect, QColor(22, 26, 40, 235));
-
-        // Border Styling
-        if (isP1Here && isP2Here) {
-            // Both P1 and P2 on same card
-            painter.setPen(QPen(QColor(255, 215, 0), 2));
-            painter.drawRect(cardRect);
-            painter.setPen(QPen(QColor(0, 225, 255), 1));
-            painter.drawRect(cardRect.adjusted(2, 2, -2, -2));
-        } else if (isP1Here && !isP1Locked) {
-            int glow = static_cast<int>(200 + 55 * std::sin(t * 10.0));
-            painter.setPen(QPen(QColor(255, 215, 0, glow), 2));
-            painter.drawRect(cardRect);
-        } else if (isP2Here) {
-            int glow = static_cast<int>(200 + 55 * std::sin(t * 10.0));
-            painter.setPen(QPen(QColor(0, 225, 255, glow), 2));
-            painter.drawRect(cardRect);
-        } else if (isP1Locked) {
-            painter.setPen(QPen(QColor(40, 200, 70), 2));
-            painter.drawRect(cardRect);
-        } else {
-            painter.setPen(QPen(QColor(60, 68, 85), 1));
-            painter.drawRect(cardRect);
-        }
-
-        // Card Header Banner (Character Name)
-        QRect headerRect(cx + 1, cardY + 1, cardW - 2, 17);
-        painter.fillRect(headerRect, c.primaryColor);
-        painter.setFont(QFont("Arial", 7, QFont::Bold));
-        painter.setPen(Qt::white);
-        painter.drawText(headerRect, Qt::AlignCenter, c.name);
-
-        // Kart Preview Box
-        QRect previewRect(cx + 6, cardY + 20, cardW - 12, 46);
-        painter.fillRect(previewRect, QColor(14, 16, 26));
-        painter.setPen(QColor(40, 46, 62));
-        painter.drawRect(previewRect);
-
-        // Ground shadow under kart
-        int bobY = static_cast<int>(std::sin(t * 8.0 + i * 1.5) * 1.8);
-        painter.setBrush(QColor(0, 0, 0, 120));
-        painter.setPen(Qt::NoPen);
-        painter.drawEllipse(cx + 24, cardY + 54, 40, 7);
-
-        // Billboard Kart Sprite
-        SpriteType st;
-        if (i == 0) st = (isP2Here && selectedCharP1 == 0) ? SpriteType::KART_MARIO_ALT : SpriteType::KART_MARIO;
-        else if (i == 1) st = (isP2Here && selectedCharP1 == 1) ? SpriteType::KART_BOWSER_ALT : SpriteType::KART_BOWSER;
-        else if (i == 2) st = (isP2Here && selectedCharP1 == 2) ? SpriteType::KART_PEACH_ALT : SpriteType::KART_PEACH;
-        else st = (isP2Here && selectedCharP1 == 3) ? SpriteType::KART_TOAD_ALT : SpriteType::KART_TOAD;
-
-        const QImage &kartImg = atlas.getSprite(st);
-        painter.drawImage(QRect(cx + 25, cardY + 23 + bobY, 38, 38), kartImg);
-
-        // Archetype Subtitle Badge
-        QRect badgeRect(cx + 6, cardY + 68, cardW - 12, 12);
-        painter.setFont(QFont("Arial", 5, QFont::Bold));
-        painter.setPen(c.secondaryColor);
-        painter.drawText(badgeRect, Qt::AlignCenter, c.archetype);
-
-        // Stat Bars Helper
-        auto drawPipBar = [&](int y, const QString &label, int pips, QColor barCol) {
-            painter.setFont(QFont("Arial", 5, QFont::Bold));
-            painter.setPen(QColor(180, 190, 205));
-            painter.drawText(QRect(cx + 6, y, 22, 10), Qt::AlignLeft | Qt::AlignVCenter, label);
-
-            int bx = cx + 30;
-            int pipW = 8;
-            int pipH = 5;
-            for (int p = 0; p < 5; ++p) {
-                QRect pipRect(bx + p * (pipW + 2), y + 2, pipW, pipH);
-                if (p < pips) {
-                    painter.fillRect(pipRect, barCol);
-                } else {
-                    painter.fillRect(pipRect, QColor(36, 40, 52));
-                }
-                painter.setPen(QColor(18, 20, 28));
-                painter.drawRect(pipRect);
-            }
-        };
-
-        drawPipBar(cardY + 83,  "SPD", c.speedPips,    QColor(255, 70, 50));
-        drawPipBar(cardY + 98,  "ACC", c.accelPips,    QColor(255, 205, 30));
-        drawPipBar(cardY + 113, "HND", c.handlingPips, QColor(40, 200, 255));
-        drawPipBar(cardY + 128, "WGT", c.weightPips,   QColor(190, 110, 255));
-
-        // Ready or Cursor Badges
-        if (isP1Locked) {
-            QRect readyRect(cx + 4, cardY + 148, cardW - 8, 16);
-            painter.fillRect(readyRect, QColor(30, 180, 60, 230));
-            painter.setFont(QFont("Arial", 6, QFont::Bold));
-            painter.setPen(Qt::white);
-            painter.drawText(readyRect, Qt::AlignCenter, "✓ P1 READY");
-        }
-
-        // P1 & P2 Badges above card
-        if (isP1Here && !isP1Locked) {
-            painter.fillRect(QRect(cx + 2, cardY - 14, 28, 12), QColor(255, 215, 0));
-            painter.setFont(QFont("Arial", 6, QFont::Bold));
-            painter.setPen(Qt::black);
-            painter.drawText(QRect(cx + 2, cardY - 14, 28, 12), Qt::AlignCenter, "P1 ▼");
-        }
-        if (isP2Here) {
-            painter.fillRect(QRect(cx + cardW - 30, cardY - 14, 28, 12), QColor(0, 225, 255));
-            painter.setFont(QFont("Arial", 6, QFont::Bold));
-            painter.setPen(Qt::black);
-            painter.drawText(QRect(cx + cardW - 30, cardY - 14, 28, 12), Qt::AlignCenter, "P2 ▼");
-        }
-    }
-
-    // 4. Highlighted Character Description Banner
-    int focusIndex = (selectedGameMode == GameMode::MULTIPLAYER && charSelectPhase == 1) ? selectedCharP2 : selectedCharP1;
-    const auto &focusChar = characters[focusIndex];
-    QRect descRect(12, 230, BUFFER_WIDTH - 24, 32);
-    painter.fillRect(descRect, QColor(20, 24, 38, 220));
-    painter.setPen(QColor(50, 60, 80));
-    painter.drawRect(descRect);
+    painter.fillRect(QRect(20, 68, 156, 54), QColor(10, 9, 12));
+    const QImage &rigImg = atlas.getSprite(getVehicleSpriteType(v.id));
+    int bob = static_cast<int>(std::sin(globalTime * 6.0) * 1.5);
+    painter.drawImage(QRect(74, 72 + bob, 48, 48), rigImg);
 
     painter.setFont(QFont("Arial", 6, QFont::Bold));
-    painter.setPen(focusChar.secondaryColor);
-    painter.drawText(QRect(18, 232, BUFFER_WIDTH - 36, 12), Qt::AlignLeft, "★ " + focusChar.name + " (" + focusChar.archetype + ")");
-    painter.setFont(QFont("Arial", 6));
-    painter.setPen(QColor(220, 225, 235));
-    painter.drawText(QRect(18, 245, BUFFER_WIDTH - 36, 14), Qt::AlignLeft, focusChar.description);
+    painter.setPen(QColor(235, 160, 45));
+    painter.drawText(QRect(16, 125, 164, 12), Qt::AlignCenter, v.archetype);
 
-    // 5. Footer Key Legend
-    QFont legFont("Arial", 6);
-    painter.setFont(legFont);
-    painter.setPen(QColor(160, 175, 195));
-    if (selectedGameMode == GameMode::MULTIPLAYER) {
-        if (charSelectPhase == 0) {
-            painter.drawText(QRect(0, 270, BUFFER_WIDTH, 14), Qt::AlignCenter,
-                "P1: [◄ / ► or A / D] Choose    [Space / Enter] Confirm    [Esc] Back to Menu");
-        } else {
-            painter.drawText(QRect(0, 270, BUFFER_WIDTH, 14), Qt::AlignCenter,
-                "P2: [◄ / ► or A / D] Choose    [Space / Enter] Start Race    [Esc] Back to P1");
+    auto drawPipBar = [&](int y, const QString &lbl, int pips, QColor col) {
+        painter.setFont(QFont("Arial", 5, QFont::Bold));
+        painter.setPen(QColor(175, 175, 185));
+        painter.drawText(QRect(18, y, 36, 10), Qt::AlignLeft, lbl);
+        for (int p = 0; p < 5; ++p) {
+            QRect pr(58 + p * 20, y + 1, 16, 6);
+            painter.fillRect(pr, (p < pips) ? col : QColor(34, 34, 40));
         }
-    } else {
-        painter.drawText(QRect(0, 270, BUFFER_WIDTH, 14), Qt::AlignCenter,
-            "[◄ / ► or A / D] Select Racer    [Space / Enter] Start Race    [Esc] Back to Menu");
+    };
+    drawPipBar(140, "SPEED",  v.speedPips,    QColor(235, 75, 50));
+    drawPipBar(154, "ACCEL",  v.accelPips,    QColor(245, 185, 35));
+    drawPipBar(168, "HANDL",  v.handlingPips, QColor(65, 195, 235));
+    drawPipBar(182, "ARMOR",  v.armorPips,    QColor(95, 200, 105));
+
+    painter.setFont(QFont("Arial", 5));
+    painter.setPen(QColor(185, 180, 175));
+    painter.drawText(QRect(16, 198, 164, 42), Qt::AlignLeft | Qt::TextWordWrap, v.description);
+
+    QRect shopBox(194, 44, 196, 200);
+    painter.fillRect(shopBox, QColor(18, 17, 22));
+    painter.setPen(QPen(QColor(80, 75, 70), 1));
+    painter.drawRect(shopBox);
+
+    painter.setFont(QFont("Arial", 7, QFont::Bold));
+    painter.setPen(QColor(245, 175, 45));
+    painter.drawText(QRect(200, 48, 184, 14), Qt::AlignCenter, "WORKSHOP UPGRADES [W/S + U]");
+
+    struct UpRow { QString name; int lvl; };
+    UpRow rows[4] = {
+        { "ARMOR PLATING", ups.armorLevel },
+        { "ENGINE / TURBO", ups.engineLevel },
+        { "SUSPENSION", ups.suspensionLevel },
+        { "NITROUS TANK", ups.nitrousLevel }
+    };
+
+    for (int i = 0; i < 4; ++i) {
+        int ry = 68 + i * 32;
+        bool sel = (garageUpgradeRow == i);
+        QRect rr(200, ry, 184, 28);
+        painter.fillRect(rr, sel ? QColor(225, 120, 25, 45) : QColor(24, 23, 28));
+        painter.setPen(QPen(sel ? QColor(245, 175, 45) : QColor(48, 46, 54), 1));
+        painter.drawRect(rr);
+
+        painter.setFont(QFont("Arial", 6, QFont::Bold));
+        painter.setPen(Qt::white);
+        painter.drawText(QRect(206, ry + 3, 110, 11), Qt::AlignLeft, rows[i].name);
+
+        QString costTxt = (rows[i].lvl >= 5) ? "MAX" : QString("₹%1").arg(GarageSystem::upgradeCost(rows[i].lvl));
+        painter.setPen(rows[i].lvl >= 5 ? QColor(90, 210, 100) : QColor(255, 200, 60));
+        painter.drawText(QRect(318, ry + 3, 60, 11), Qt::AlignRight, costTxt);
+
+        for (int p = 0; p < 5; ++p) {
+            painter.fillRect(QRect(206 + p * 18, ry + 17, 14, 5),
+                             (p < rows[i].lvl) ? QColor(245, 165, 35) : QColor(40, 40, 48));
+        }
     }
+
+    {
+        int ry = 198;
+        bool sel = (garageUpgradeRow == 4);
+        QRect rr(200, ry, 184, 26);
+        painter.fillRect(rr, sel ? QColor(60, 160, 80, 50) : QColor(24, 23, 28));
+        painter.setPen(QPen(sel ? QColor(90, 220, 110) : QColor(48, 46, 54), 1));
+        painter.drawRect(rr);
+
+        int curHull = static_cast<int>(garage.currentHull().integrity);
+        int repairCost = std::max(0, 100 - curHull);
+        painter.setFont(QFont("Arial", 6, QFont::Bold));
+        painter.setPen(QColor(210, 230, 215));
+        painter.drawText(QRect(206, ry + 6, 116, 14), Qt::AlignLeft, QString("REPAIR HULL (%1%)").arg(curHull));
+        painter.setPen(QColor(110, 235, 130));
+        painter.drawText(QRect(320, ry + 6, 58, 14), Qt::AlignRight, repairCost > 0 ? QString("₹%1").arg(repairCost) : "FULL");
+    }
+
+    if (garageMsgTimer > 0.0 && !garageStatusMsg.isEmpty()) {
+        painter.setFont(QFont("Arial", 6, QFont::Bold));
+        painter.setPen(QColor(255, 215, 70));
+        painter.drawText(QRect(200, 228, 184, 12), Qt::AlignCenter, garageStatusMsg);
+    }
+
+    painter.setFont(QFont("Arial", 6, QFont::Bold));
+    painter.setPen(QColor(185, 185, 190));
+    painter.drawText(QRect(0, 258, BUFFER_WIDTH, 14), Qt::AlignCenter,
+                     "[A/D] Vehicle  •  [W/S] Select Upgrade  •  [U] Buy  •  [1/2/3] Sector");
+    painter.setPen(QColor(245, 175, 45));
+    painter.drawText(QRect(0, 274, BUFFER_WIDTH, 14), Qt::AlignCenter,
+                     "[ENTER / SPACE] LAUNCH ESCAPE   •   [ESC] MAIN MENU");
 }
 
 void GameCanvas::renderRaceFinishedOverlay()
@@ -2859,593 +3094,148 @@ void GameCanvas::renderRaceFinishedOverlay()
     QPainter painter(&screenBuffer);
     painter.setRenderHint(QPainter::Antialiasing, false);
 
-    QRect bannerRect(40, 105, BUFFER_WIDTH - 80, 80);
-    painter.fillRect(bannerRect, QColor(14, 18, 30, 235));
-    painter.setPen(QPen(QColor(255, 215, 0), 2));
+    QRect bannerRect(36, 76, BUFFER_WIDTH - 72, 144);
+    painter.fillRect(bannerRect, QColor(12, 10, 14, 242));
+    painter.setPen(QPen(didSurviveRun ? QColor(80, 220, 100) : QColor(235, 55, 45), 2));
     painter.drawRect(bannerRect);
 
-    painter.setFont(QFont("Arial", 12, QFont::Bold));
-    painter.setPen(QColor(255, 225, 30));
-    painter.drawText(QRect(40, 115, BUFFER_WIDTH - 80, 22), Qt::AlignCenter, "🏁 COURSE FINISHED! 🏁");
+    painter.setFont(QFont("Courier New", 13, QFont::Bold));
+    painter.setPen(didSurviveRun ? QColor(110, 240, 120) : QColor(255, 75, 60));
+    painter.drawText(QRect(36, 84, BUFFER_WIDTH - 72, 22), Qt::AlignCenter,
+                     didSurviveRun ? "KOLKATA EVACUATED!" : "VEHICLE LOST IN RUINS");
 
     painter.setFont(QFont("Arial", 7, QFont::Bold));
+    painter.setPen(QColor(235, 175, 55));
+    painter.drawText(QRect(44, 108, BUFFER_WIDTH - 88, 14), Qt::AlignCenter, finishReason);
+
     painter.setPen(Qt::white);
-    painter.drawText(QRect(40, 142, BUFFER_WIDTH - 80, 16), Qt::AlignCenter, "PRESS [R] TO RESTART RACE");
-    painter.setPen(QColor(0, 225, 255));
-    painter.drawText(QRect(40, 158, BUFFER_WIDTH - 80, 16), Qt::AlignCenter, "PRESS [ENTER] OR [ESC] FOR MAIN MENU");
+    painter.drawText(QRect(44, 128, BUFFER_WIDTH - 88, 14), Qt::AlignCenter,
+                     QString("RANK #%1  •  PROGRESS %2%  •  HULL %3%")
+                         .arg(playerPlacement)
+                         .arg(static_cast<int>(splineProgress * 100.0))
+                         .arg(static_cast<int>(playerHull.integrity)));
+
+    painter.setPen(QColor(255, 210, 75));
+    painter.drawText(QRect(44, 144, BUFFER_WIDTH - 88, 14), Qt::AlignCenter,
+                     QString("TIME: %1s   •   SCRAP COLLECTED: +₹%2")
+                         .arg(QString::number(raceElapsedTime, 'f', 1))
+                         .arg(scrapCollectedThisRun));
+
+    QString resumeTxt = activeCheckpointSave.valid
+        ? QString("PRESS [R] TO RESUME FROM CHECKPOINT %1").arg(activeCheckpointSave.checkpointIdx)
+        : "PRESS [R] TO RETRY STAGE";
+    painter.setPen(QColor(180, 220, 255));
+    painter.drawText(QRect(44, 168, BUFFER_WIDTH - 88, 14), Qt::AlignCenter, resumeTxt);
+    painter.setPen(QColor(160, 165, 175));
+    painter.drawText(QRect(44, 184, BUFFER_WIDTH - 88, 14), Qt::AlignCenter, "PRESS [SHIFT+R] FOR FRESH RESTART");
+    painter.setPen(QColor(245, 165, 40));
+    painter.drawText(QRect(44, 200, BUFFER_WIDTH - 88, 14), Qt::AlignCenter, "PRESS [ENTER] OR [ESC] FOR GARAGE");
 }
 
 // -------------------------------------------------------------
-// DRIFT SPARKS & MINI-TURBO (Milestone 3 F9)
-// -------------------------------------------------------------
-
-void GameCanvas::updateDriftSparks(double dt)
-{
-    // Update existing sparks
-    for (auto it = driftSparks.begin(); it != driftSparks.end();) {
-        it->life -= dt;
-        it->x += it->vx * dt;
-        it->y += it->vy * dt;
-        if (it->life <= 0.0) {
-            it = driftSparks.erase(it);
-        } else {
-            ++it;
-        }
-    }
-
-    // Spawn new sparks if drift timer >= 0.5s
-    if (driftTimer >= 0.5 && driftSparks.size() < 30) {
-        bool isCharged = (driftTimer >= 1.0);
-        int emitSideX = (driftDirection > 0) ? 75 : 325; // Outer rear wheel
-
-        for (int i = 0; i < 3; ++i) {
-            SparkParticle p;
-            p.x = emitSideX + (rand() % 24 - 12);
-            p.y = BUFFER_HEIGHT - 30 + (rand() % 16 - 8);
-            p.vx = -driftDirection * (20.0 + (rand() % 50));
-            p.vy = -(30.0 + (rand() % 60));
-            p.life = 0.18 + (rand() % 10) * 0.01;
-            p.maxLife = p.life;
-
-            if (isCharged) {
-                // Fiery orange / golden yellow
-                p.color = (rand() % 2 == 0) ? qRgb(255, 140, 20) : qRgb(255, 230, 40);
-            } else {
-                // Electric blue / cyan white
-                p.color = (rand() % 2 == 0) ? qRgb(60, 180, 255) : qRgb(160, 230, 255);
-            }
-            driftSparks.push_back(p);
-        }
-    }
-}
-
-// -------------------------------------------------------------
-// TRACK HAZARDS SYSTEM (Milestone 3 F10, F11)
-// -------------------------------------------------------------
-
-void GameCanvas::updateTrackHazards(double dt)
-{
-    dt = std::min(dt, 0.05);
-
-    for (auto &hazard : trackHazards) {
-        if (hazard.type == HazardType::LAVA_GEYSER) {
-            // Eruption cycle: Dormant (0..2.5s) -> Warning (2.5..3.3s) -> Spewing Active (3.3..4.8s)
-            hazard.animTimer += dt;
-            if (hazard.animTimer >= 4.8) {
-                hazard.animTimer -= 4.8;
-            }
-            hazard.isErupting = (hazard.animTimer >= 3.3);
-
-            if (hazard.isErupting) {
-                // Check Player 1
-                double distP1 = std::hypot(kartX - hazard.x, kartZ - hazard.z);
-                if (distP1 < hazard.radius) {
-                    double pushX = (distP1 > 0.001) ? ((kartX - hazard.x) / distP1) : 1.0;
-                    double pushZ = (distP1 > 0.001) ? ((kartZ - hazard.z) / distP1) : 0.0;
-                    isSpinning = true;
-                    spinTimer = 0.8;
-                    kartSpeed *= 0.25; // 75% speed loss
-                    kartX += pushX * 15.0;
-                    kartZ += pushZ * 15.0;
-                    flashIntensity = 0.6;
-                }
-
-                // Check Player 2 in Multiplayer
-                if (selectedGameMode == GameMode::MULTIPLAYER) {
-                    double distP2 = std::hypot(player2.x - hazard.x, player2.z - hazard.z);
-                    if (distP2 < hazard.radius) {
-                        double pushX = (distP2 > 0.001) ? ((player2.x - hazard.x) / distP2) : 1.0;
-                        double pushZ = (distP2 > 0.001) ? ((player2.z - hazard.z) / distP2) : 0.0;
-                        player2.isSpinning = true;
-                        player2.spinTimer = 0.8;
-                        player2.speed *= 0.25;
-                        player2.x += pushX * 15.0;
-                        player2.z += pushZ * 15.0;
-                    }
-                }
-
-                // Check AI Opponents
-                for (auto &ai : aiOpponents) {
-                    double distAI = std::hypot(ai.x - hazard.x, ai.z - hazard.z);
-                    if (distAI < hazard.radius) {
-                        double pushX = (distAI > 0.001) ? ((ai.x - hazard.x) / distAI) : 1.0;
-                        double pushZ = (distAI > 0.001) ? ((ai.z - hazard.z) / distAI) : 0.0;
-                        ai.isSpinning = true;
-                        ai.spinTimer = 0.8;
-                        ai.speed *= 0.25;
-                        ai.x += pushX * 15.0;
-                        ai.z += pushZ * 15.0;
-                    }
-                }
-            }
-        } else if (hazard.type == HazardType::CHOCOLATE_FOUNTAIN) {
-            hazard.animTimer += dt;
-
-            // Player 1: mud pool cuts speed by 50%
-            double distP1 = std::hypot(kartX - hazard.x, kartZ - hazard.z);
-            if (distP1 < hazard.radius) {
-                if (kartSpeed > maxSpeed * 0.50) {
-                    kartSpeed = maxSpeed * 0.50;
-                }
-            }
-
-            // Player 2
-            if (selectedGameMode == GameMode::MULTIPLAYER) {
-                double distP2 = std::hypot(player2.x - hazard.x, player2.z - hazard.z);
-                if (distP2 < hazard.radius) {
-                    if (player2.speed > player2.maxSpeed * 0.50) {
-                        player2.speed = player2.maxSpeed * 0.50;
-                    }
-                }
-            }
-
-            // AI Opponents
-            for (auto &ai : aiOpponents) {
-                double distAI = std::hypot(ai.x - hazard.x, ai.z - hazard.z);
-                if (distAI < hazard.radius) {
-                    if (ai.speed > ai.maxSpeed * 0.50) {
-                        ai.speed = ai.maxSpeed * 0.50;
-                    }
-                }
-            }
-        } else if (hazard.type == HazardType::ROLLING_CANDY) {
-            hazard.animTimer += dt;
-            double offset = 40.0 * std::sin(hazard.animTimer * 2.0);
-            double currentCandyX = hazard.x + offset;
-
-            // Player 1: Bumper bounce recoil (-35.0 u/s)
-            double distP1 = std::hypot(kartX - currentCandyX, kartZ - hazard.z);
-            if (distP1 < hazard.radius) {
-                kartSpeed = -35.0;
-            }
-
-            // Player 2
-            if (selectedGameMode == GameMode::MULTIPLAYER) {
-                double distP2 = std::hypot(player2.x - currentCandyX, player2.z - hazard.z);
-                if (distP2 < hazard.radius) {
-                    player2.speed = -35.0;
-                }
-            }
-
-            // AI Opponents
-            for (auto &ai : aiOpponents) {
-                double distAI = std::hypot(ai.x - currentCandyX, ai.z - hazard.z);
-                if (distAI < hazard.radius) {
-                    ai.speed = -35.0;
-                }
-            }
-        }
-    }
-}
-
-// -------------------------------------------------------------
-// TOP-LEFT HUD MINIMAP (Milestone 3 F12)
-// -------------------------------------------------------------
-
-void GameCanvas::updateMinimapTrackCache()
-{
-    minimapTrackCache = QImage(MinimapHUD::RADAR_SIZE, MinimapHUD::RADAR_SIZE, QImage::Format_ARGB32_Premultiplied);
-    minimapTrackCache.fill(Qt::transparent);
-
-    if (currentTrackWaypoints.size() < 3) return;
-
-    QPainter p(&minimapTrackCache);
-    p.setRenderHint(QPainter::Antialiasing, true);
-
-    const double scale = static_cast<double>(MinimapHUD::RADAR_SIZE) / static_cast<double>(TRACK_MAP_SIZE);
-
-    QPainterPath path;
-    for (size_t i = 0; i < currentTrackWaypoints.size(); ++i) {
-        double rx = currentTrackWaypoints[i].x() * scale;
-        double ry = currentTrackWaypoints[i].y() * scale;
-        if (i == 0) path.moveTo(rx, ry);
-        else path.lineTo(rx, ry);
-    }
-    path.closeSubpath();
-
-    // 1. Dark outer casing for contrast against background
-    p.setPen(QPen(QColor(30, 35, 50, 220), 7.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    p.drawPath(path);
-
-    // 2. High-visibility road surface ribbon
-    p.setPen(QPen(QColor(220, 225, 235, 240), 4.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    p.drawPath(path);
-
-    // 3. Gold start/finish line indicator tick at waypoint 0
-    double startX = currentTrackWaypoints[0].x() * scale;
-    double startY = currentTrackWaypoints[0].y() * scale;
-    p.setPen(QPen(QColor(255, 215, 0, 255), 2.5));
-    p.drawLine(QPointF(startX, startY - 3.5), QPointF(startX, startY + 3.5));
-}
-
-void GameCanvas::renderMinimap()
-{
-    QPainter painter(&screenBuffer);
-
-    const int rx = MinimapHUD::RADAR_X;
-    const int ry = MinimapHUD::RADAR_Y;
-    const int size = MinimapHUD::RADAR_SIZE;
-    const QRect radarRect(rx, ry, size, size);
-
-    // 1. Strict clipping to radar bounds (satisfies F12.5)
-    painter.setClipRect(radarRect);
-
-    // 2. Semi-transparent dark background
-    painter.fillRect(radarRect, QColor(0, 0, 0, 160));
-
-    // 3. Subtle radar crosshair grid
-    painter.setPen(QPen(QColor(255, 255, 255, 25), 1, Qt::DotLine));
-    painter.drawLine(rx + size / 2, ry, rx + size / 2, ry + size);
-    painter.drawLine(rx, ry + size / 2, rx + size, ry + size / 2);
-
-    // 4. Pre-rendered track outline
-    if (!minimapTrackCache.isNull()) {
-        painter.drawImage(rx, ry, minimapTrackCache);
-    }
-
-    // 5. Remote / AI Opponent Blips (Rendered beneath Player 1)
-    if (isNetworkRace) {
-        for (const auto &rk : remoteKarts) {
-            QPointF rkPos = MinimapHUD::worldToRadar(rk.x, rk.z);
-            painter.setPen(QPen(QColor(10, 10, 15, 220), 1.0));
-            painter.setBrush(rk.kartColor);
-            painter.drawEllipse(rkPos, 2.5, 2.5);
-        }
-    } else if (selectedGameMode == GameMode::PLAY_VS_AI) {
-        for (const auto &ai : aiOpponents) {
-            QPointF blipPos = MinimapHUD::worldToRadar(ai.x, ai.z);
-
-            painter.setPen(QPen(QColor(10, 10, 15, 220), 1.0));
-            painter.setBrush(ai.kartColor);
-            painter.drawEllipse(blipPos, 2.2, 2.2);
-        }
-    } else if (selectedGameMode == GameMode::MULTIPLAYER) {
-        QPointF p2Pos = MinimapHUD::worldToRadar(player2.x, player2.z);
-        painter.setPen(QPen(QColor(255, 255, 255, 240), 1.0));
-        painter.setBrush(player2.kartColor);
-        painter.drawEllipse(p2Pos, 2.5, 2.5);
-    }
-
-    // 6. Player 1 Blip (Pulsing White / Neon Yellow Dot)
-    {
-        QPointF p1Pos = MinimapHUD::worldToRadar(kartX, kartZ);
-
-        double pulse = 0.5 + 0.5 * std::sin(globalTime * 8.0);
-        double outerRadius = 3.2 + pulse * 1.0;
-
-        // Outer pulsing yellow aura
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(255, 235, 50, static_cast<int>(120 + 100 * pulse)));
-        painter.drawEllipse(p1Pos, outerRadius, outerRadius);
-
-        // Pure white inner core with dark contour
-        painter.setPen(QPen(QColor(40, 40, 40, 180), 0.8));
-        painter.setBrush(QColor(255, 255, 255, 255));
-        painter.drawEllipse(p1Pos, 2.2, 2.2);
-    }
-
-    // 7. Reset clipping for crisp outer retro frame
-    painter.setClipping(false);
-
-    // Outer gunmetal border
-    painter.setPen(QPen(QColor(70, 75, 95, 230), 1.5));
-    painter.setBrush(Qt::NoBrush);
-    painter.drawRect(radarRect);
-
-    // Inner highlight bevel (1px inset)
-    painter.setPen(QPen(QColor(140, 150, 175, 100), 1.0));
-    painter.drawRect(radarRect.adjusted(1, 1, -1, -1));
-
-    // Retro corner accent brackets
-    painter.setPen(QPen(QColor(255, 215, 0, 190), 1.0));
-    // Top-left
-    painter.drawLine(rx, ry, rx + 4, ry);
-    painter.drawLine(rx, ry, rx, ry + 4);
-    // Top-right
-    painter.drawLine(rx + size, ry, rx + size - 4, ry);
-    painter.drawLine(rx + size, ry, rx + size - 4, ry);
-    // Bottom-left
-    painter.drawLine(rx, ry + size, rx + 4, ry + size);
-    painter.drawLine(rx, ry + size, rx, ry + size - 4);
-    // Bottom-right
-    painter.drawLine(rx + size, ry + size, rx + size - 4, ry + size);
-    painter.drawLine(rx + size, ry + size, rx + size, ry + size - 4);
-}
-
-// -------------------------------------------------------------
-// LAN MULTIPLAYER SYSTEM & LOBBY
+// LAN MULTIPLAYER ESCAPE LOBBY & SYNCHRONIZED CHECKPOINTS
 // -------------------------------------------------------------
 
 QString GameCanvas::generateSecretCode()
 {
-    const QStringList codePool = {
-        "KART1", "KART7", "TURBO", "RACE9", "FAST4",
-        "DRIFT", "PIPES", "COINS", "SUPER", "SPEED",
-        "BOOST", "STAR3", "SHELL", "TRACK", "APEX8",
-        "RETRO", "NITRO", "FLASH", "GRAND", "CHAMP"
-    };
-    int idx = QRandomGenerator::global()->bounded(codePool.size());
-    return codePool[idx];
+    static const char alphanum[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    QString code;
+    for (int i = 0; i < 5; ++i) {
+        code += alphanum[QRandomGenerator::global()->bounded(static_cast<int>(sizeof(alphanum) - 1))];
+    }
+    return code;
 }
 
 void GameCanvas::initNetworkManager()
 {
-    if (networkManager) return;
-
     networkManager = new NetworkManager(this);
-
-    connect(networkManager, &NetworkManager::statusChanged, this, [this](const QString &) {
+    connect(networkManager, &NetworkManager::lobbyUpdated, this, [this]() { update(); });
+    connect(networkManager, &NetworkManager::raceStartTriggered, this, [this](int stageLevel) {
+        startMultiplayerRace(stageLevel);
+    });
+    connect(networkManager, &NetworkManager::remoteKartUpdated, this, [this](int) {
+        updateRemoteKarts(0.0);
+    });
+    connect(networkManager, &NetworkManager::remotePlayerFinished, this, [this](int, double, int) {
+        updateRemoteKarts(0.0);
+    });
+    connect(networkManager, &NetworkManager::checkpointLobbyUpdated, this, [this]() {
         update();
     });
-
-    connect(networkManager, &NetworkManager::lobbyUpdated, this, [this]() {
-        if (currentState == GameState::MULTIPLAYER_LOBBY) {
-            if (networkManager->getRole() == NetworkRole::CLIENT &&
-                networkManager->isConnected() &&
-                multiLobbyState == MultiLobbyState::JOIN_INPUT) {
-                multiLobbyState = MultiLobbyState::WAITING_ROOM;
-            }
+    connect(networkManager, &NetworkManager::checkpointRolloutTriggered, this, [this](int) {
+        if (currentState == GameState::CHECKPOINT_PIT) {
+            rolloutFromCheckpointPit();
         }
-        update();
     });
-
-    connect(networkManager, &NetworkManager::raceStartTriggered, this, [this](int trackLevel) {
-        startMultiplayerRace(trackLevel);
-    });
-
-    connect(networkManager, &NetworkManager::remoteKartUpdated, this, [this](int playerId) {
-        const NetPlayer *np = networkManager->getPlayer(playerId);
-        if (!np) return;
-
-        for (auto &rk : remoteKarts) {
-            if (rk.id == playerId) {
-                rk.x = np->x;
-                rk.z = np->z;
-                rk.angle = np->angle;
-                rk.speed = np->speed;
-                rk.currentLap = np->currentLap;
-                rk.isSpinning = np->isSpinning;
-                rk.isDrifting = np->isDrifting;
-                rk.raceFinished = np->raceFinished;
-                rk.finishTime = np->finishTime;
-                rk.characterId = np->characterId;
-                if (np->characterId >= 0 && np->characterId < static_cast<int>(characters.size())) {
-                    rk.kartColor = characters[np->characterId].primaryColor;
-                }
-                break;
-            }
-        }
-        update();
-    });
-
-    connect(networkManager, &NetworkManager::remoteItemTriggered, this, [this](int senderId, int itemType, double x, double z, double angle) {
-        SpriteType st = static_cast<SpriteType>(itemType);
-        if (st == SpriteType::BANANA_DROPPED) {
-            worldSprites.push_back({ x, z, 0.0, SpriteType::BANANA_DROPPED, true, 0.0, senderId, 1.2 });
-        } else if (st == SpriteType::SHELL_PROJECTILE) {
-            Projectile shell;
-            shell.x = x;
-            shell.z = z;
-            shell.vx = std::cos(angle) * 200.0;
-            shell.vz = std::sin(angle) * 200.0;
-            shell.ownerId = senderId;
-            shell.active = true;
-            shell.lifeTime = 6.0;
-            shell.bouncesLeft = 3;
-            activeProjectiles.push_back(shell);
-        } else if (st == SpriteType::INK_BLOOPER) {
-            if (senderId != networkManager->getLocalPlayerId()) {
-                inkTimer = 4.0;
-                flashIntensity = 0.35;
-            }
-        }
-        update();
-    });
-
-    connect(networkManager, &NetworkManager::remotePlayerFinished, this, [this](int playerId, double finishTime, int placement) {
-        for (auto &rk : remoteKarts) {
-            if (rk.id == playerId) {
-                rk.raceFinished = true;
-                rk.finishTime = finishTime;
-                rk.placement = placement;
-                break;
-            }
-        }
-        update();
-    });
-
-    connect(networkManager, &NetworkManager::allPlayersFinished, this, [this]() {
-        if (currentState == GameState::RACING) {
-            isRaceFinished = true;
-            currentState = GameState::RACE_FINISHED;
-            triggerCelebration("🏁 ALL RACERS FINISHED! 🏁", "RACE COMPLETE!");
-        }
-        update();
-    });
-
     connect(networkManager, &NetworkManager::returnedToLobby, this, [this]() {
         isNetworkRace = false;
+        isRaceFinished = false;
         currentState = GameState::MULTIPLAYER_LOBBY;
-        multiLobbyState = MultiLobbyState::WAITING_ROOM;
-        update();
-    });
-
-    connect(networkManager, &NetworkManager::connectionLost, this, [this](const QString &) {
-        if (isNetworkRace) {
-            isNetworkRace = false;
-            currentState = GameState::TITLE_MENU;
-        } else if (currentState == GameState::MULTIPLAYER_LOBBY) {
-            multiLobbyState = MultiLobbyState::MODE_CHOICE;
-        }
+        multiLobbyState = (networkManager->isHost()) ? MultiLobbyState::HOST_SETUP : MultiLobbyState::WAITING_ROOM;
         update();
     });
 }
 
-void GameCanvas::startMultiplayerRace(int trackLevel)
+void GameCanvas::startMultiplayerRace(int stageLevel)
 {
-    if (characters.empty()) {
-        initCharacters();
-    }
-    pressedKeys.clear();
     isNetworkRace = true;
-
-    setTrackLevel(static_cast<TrackLevel>(trackLevel));
+    selectedGameMode = GameMode::MULTIPLAYER;
+    currentStage = static_cast<KolkataStage>(std::clamp(stageLevel, 0, 2));
 
     int myId = networkManager ? networkManager->getLocalPlayerId() : 0;
-    const NetPlayer *myNetPlayer = networkManager ? networkManager->getPlayer(myId) : nullptr;
-    int myCharId = myNetPlayer ? myNetPlayer->characterId : selectedCharP1;
-    selectedCharP1 = myCharId;
-
-    const CharacterDef &p1 = getSelectedCharacterP1();
-    this->maxSpeed = p1.maxSpeed;
-    this->accel = p1.accel;
-    this->brakeDecel = 240.0;
-    this->turnRate = p1.turnRate;
-    this->driftFactor = p1.driftFactor;
-    this->weight = p1.weight;
-
-    isDrifting = false;
-    driftTimer = 0.0;
-    miniTurboTimer = 0.0;
-    driftHopTimer = 0.0;
-    driftHopHeight = 0.0;
-    lateralSlipAngle = 0.0;
-    driftDirection = 0;
-    driftSparks.clear();
-
-    int mySlot = 0;
     if (networkManager) {
-        const auto &pList = networkManager->getPlayers();
-        for (size_t i = 0; i < pList.size(); ++i) {
-            if (pList[i].id == myId) {
-                mySlot = static_cast<int>(i);
-                break;
-            }
-        }
+        const NetPlayer *me = networkManager->getPlayer(myId);
+        if (me) selectedVehicleP1 = me->characterId;
     }
 
-    double baseZ = (currentLevel == TrackLevel::BOWSER_CASTLE) ? 250.0 : 200.0;
-    kartX = 470.0 - mySlot * 18.0;
-    kartZ = baseZ + ((mySlot % 2 == 0) ? -6.0 : +6.0);
-    kartAngle = 0.0;
-    kartSpeed = 0.0;
-    steeringVisualAngle = 0.0;
-    currentLap = 1;
-    nextCheckpoint = 1;
-    hasPassedHalfway = false;
-    firstStartCrossed = false;
-    raceElapsedTime = 0.0;
-    networkSyncTimer = 0.0;
-
-    player1.id = myId;
-    player1.isHuman = true;
-    player1.characterId = p1.id;
-    player1.name = myNetPlayer ? myNetPlayer->name : p1.name;
-    player1.kartColor = p1.primaryColor;
-    player1.x = kartX;
-    player1.z = kartZ;
-    player1.angle = kartAngle;
-    player1.speed = kartSpeed;
-    player1.currentLap = 1;
-    player1.nextCheckpoint = 1;
-    player1.hasPassedHalfway = false;
-    player1.firstStartCrossed = false;
-    player1.raceFinished = false;
-    player1.totalRaceDistance = 0.0;
-    player1.finishTime = 0.0;
-
-    remoteKarts.clear();
+    activeCheckpointSave.valid = false;
+    startRace(false);
+    isNetworkRace = true;
     aiOpponents.clear();
 
-    if (networkManager) {
-        const auto &pList = networkManager->getPlayers();
-        for (size_t i = 0; i < pList.size(); ++i) {
-            const auto &np = pList[i];
-            if (np.id == myId) continue;
+    if (networkManager && currentWaypoints.size() >= 2) {
+        double startX = currentWaypoints[0].x();
+        double startZ = currentWaypoints[0].y();
+        double startAngle = std::atan2(currentWaypoints[1].y() - startZ, currentWaypoints[1].x() - startX);
+        double fwdX = std::cos(startAngle), fwdZ = std::sin(startAngle);
+        double rightX = -fwdZ, rightZ = fwdX;
 
-            KartEntity rk;
-            rk.id = np.id;
-            rk.isHuman = true;
-            rk.isAI = false;
-            rk.characterId = np.characterId;
-            rk.name = np.name;
-            if (np.characterId >= 0 && np.characterId < static_cast<int>(characters.size())) {
-                const auto &cDef = characters[np.characterId];
-                rk.kartColor = (np.characterId == myCharId) ? cDef.altColor : cDef.primaryColor;
-                rk.maxSpeed = cDef.maxSpeed;
-                rk.accel = cDef.accel;
-                rk.turnRate = cDef.turnRate;
-            }
-            int slot = static_cast<int>(i);
-            rk.x = 470.0 - slot * 18.0;
-            rk.z = baseZ + ((slot % 2 == 0) ? -6.0 : +6.0);
-            rk.angle = 0.0;
-            rk.speed = 0.0;
-            rk.currentLap = 1;
-            rk.raceFinished = false;
-            rk.finishTime = 0.0;
-            remoteKarts.push_back(rk);
-        }
+        kartX = startX + fwdX * (-12.0 * myId) + rightX * ((myId % 2 == 0) ? -10.0 : 10.0);
+        kartZ = startZ + fwdZ * (-12.0 * myId) + rightZ * ((myId % 2 == 0) ? -10.0 : 10.0);
+        kartAngle = startAngle;
     }
-
-    heldItem = PlayerItem::NONE;
-    isRouletteActive = false;
-    rouletteTimer = 0.0;
-    mushroomBoostTimer = 0.0;
-    isSpinning = false;
-    spinTimer = 0.0;
-    inkTimer = 0.0;
-
-    isCelebrationActive = false;
-    isRaceFinished = false;
-    celebrationTimer = 0.0;
-    flashIntensity = 0.0;
-    confetti.clear();
-
-    activeProjectiles.clear();
-
-    currentState = GameState::RACING;
-    pressedKeys.clear();
-    triggerCelebration("★ RACE START! ★", "GO GO GO!");
-    update();
+    updateRemoteKarts(0.0);
 }
 
-void GameCanvas::updateRemoteKarts(double dt)
+void GameCanvas::updateRemoteKarts(double)
 {
-    for (auto &rk : remoteKarts) {
-        if (rk.raceFinished) {
-            rk.speed = std::max(0.0, rk.speed - 55.0 * dt);
-        }
-        if (rk.isSpinning) {
-            rk.angle += 12.0 * dt;
-        }
-        rk.x += rk.speed * std::cos(rk.angle) * dt;
-        rk.z += rk.speed * std::sin(rk.angle) * dt;
-
-        while (rk.x < 0.0) rk.x += 1024.0;
-        while (rk.x >= 1024.0) rk.x -= 1024.0;
-        while (rk.z < 0.0) rk.z += 1024.0;
-        while (rk.z >= 1024.0) rk.z -= 1024.0;
+    if (!networkManager || !isNetworkRace) return;
+    int myId = networkManager->getLocalPlayerId();
+    remoteKarts.clear();
+    for (const auto &np : networkManager->getPlayers()) {
+        if (np.id == myId) continue;
+        KartEntity rk;
+        rk.id = np.id;
+        rk.isHuman = true;
+        rk.isAI = false;
+        rk.vehicleId = np.characterId;
+        rk.characterId = np.characterId;
+        rk.name = np.name;
+        rk.kartColor = (np.characterId >= 0 && np.characterId < static_cast<int>(vehicles.size()))
+            ? vehicles[np.characterId].primaryColor : QColor(240, 180, 30);
+        rk.x = np.x;
+        rk.z = np.z;
+        rk.angle = np.angle;
+        rk.speed = np.speed;
+        rk.isSpinning = np.isSpinning;
+        rk.isDrifting = np.isDrifting;
+        rk.raceFinished = np.raceFinished;
+        rk.finishTime = np.finishTime;
+        rk.placement = np.placement;
+        rk.hull.integrity = np.hull;
+        rk.isEliminated = np.isEliminated;
+        rk.progressMeters = np.progressMeters;
+        remoteKarts.push_back(rk);
     }
 }
 
@@ -3453,412 +3243,87 @@ void GameCanvas::renderMultiplayerLobby()
 {
     QPainter painter(&screenBuffer);
     painter.setRenderHint(QPainter::Antialiasing, false);
+    painter.fillRect(QRect(0, 0, BUFFER_WIDTH, BUFFER_HEIGHT), QColor(12, 11, 14));
 
-    // Midnight sky & ground
-    QLinearGradient skyGrad(0, 0, 0, HORIZON_Y);
-    skyGrad.setColorAt(0.0, QColor(6, 10, 24));
-    skyGrad.setColorAt(1.0, QColor(22, 32, 56));
-    painter.fillRect(QRect(0, 0, BUFFER_WIDTH, HORIZON_Y), skyGrad);
-
-    QLinearGradient groundGrad(0, HORIZON_Y, 0, BUFFER_HEIGHT);
-    groundGrad.setColorAt(0.0, QColor(16, 8, 28));
-    groundGrad.setColorAt(1.0, QColor(36, 14, 48));
-    painter.fillRect(QRect(0, HORIZON_Y, BUFFER_WIDTH, BUFFER_HEIGHT - HORIZON_Y), groundGrad);
-
-    // Perspective Grid
-    painter.setPen(QColor(0, 229, 255, 50));
-    for (int i = 0; i < 14; ++i) {
-        int groundX = -100 + i * 46;
-        painter.drawLine(BUFFER_WIDTH / 2, HORIZON_Y, groundX, BUFFER_HEIGHT);
-    }
-    double gridScroll = std::fmod(globalTime * 40.0, 16.0);
-    for (int y = HORIZON_Y; y < BUFFER_HEIGHT; y += 12) {
-        int lineY = y + static_cast<int>(gridScroll);
-        if (lineY > HORIZON_Y && lineY < BUFFER_HEIGHT) {
-            int alpha = std::min(100, static_cast<int>((lineY - HORIZON_Y) * 0.8));
-            painter.setPen(QColor(0, 229, 255, alpha));
-            painter.drawLine(0, lineY, BUFFER_WIDTH, lineY);
-        }
-    }
-
-    // Top checkered banner
-    int checkSize = 8;
-    double bannerOffset = std::fmod(globalTime * 20.0, static_cast<double>(checkSize * 2));
-    for (int x = -checkSize * 2; x < BUFFER_WIDTH + checkSize * 2; x += checkSize) {
-        int bx = static_cast<int>(x + bannerOffset);
-        bool even = ((x / checkSize) % 2 == 0);
-        painter.fillRect(QRect(bx, 0, checkSize, 5), even ? QColor(255, 215, 0) : QColor(20, 20, 24));
-    }
+    painter.setPen(QPen(QColor(225, 130, 25), 2));
+    painter.drawLine(0, 34, BUFFER_WIDTH, 34);
+    painter.setFont(QFont("Courier New", 11, QFont::Bold));
+    painter.setPen(QColor(245, 175, 45));
+    painter.drawText(QRect(0, 8, BUFFER_WIDTH, 22), Qt::AlignCenter, "LAN ESCAPE CONVOY LOBBY");
 
     if (multiLobbyState == MultiLobbyState::MODE_CHOICE) {
-        // Title
-        painter.setFont(QFont("Arial", 16, QFont::Black));
-        painter.setPen(QColor(10, 5, 20));
-        painter.drawText(QRect(2, 22, BUFFER_WIDTH, 28), Qt::AlignCenter, "LAN MULTIPLAYER");
-        painter.setPen(QColor(255, 220, 30));
-        painter.drawText(QRect(0, 20, BUFFER_WIDTH, 28), Qt::AlignCenter, "LAN MULTIPLAYER");
-
-        painter.setFont(QFont("Arial", 6, QFont::Bold));
-        painter.setPen(QColor(0, 229, 255));
-        painter.drawText(QRect(0, 48, BUFFER_WIDTH, 12), Qt::AlignCenter, "★ PLAY WITH DEVICES ON THE SAME LOCAL NETWORK / WI-FI ★");
-
-        // Options Box
-        int boxX = 65;
-        int boxY = 75;
-        int boxW = 270;
-        int boxH = 125;
-        painter.fillRect(QRect(boxX, boxY, boxW, boxH), QColor(14, 18, 32, 240));
-        painter.setPen(QPen(QColor(255, 215, 0), 2));
-        painter.drawRoundedRect(QRect(boxX, boxY, boxW, boxH), 6, 6);
-
-        painter.setFont(QFont("Arial", 7, QFont::Bold));
-        painter.setPen(QColor(255, 215, 0));
-        painter.drawText(QRect(boxX, boxY + 8, boxW, 14), Qt::AlignCenter, "— CHOOSE MULTIPLAYER ACTION —");
-
-        const char* choices[2] = {
-            "1. HOST A RACE (GET SECRET CODE)",
-            "2. JOIN A RACE (ENTER SECRET CODE)"
-        };
-
-        int itemY = boxY + 34;
-        int chevronOffset = static_cast<int>(3.0 * std::sin(globalTime * 8.0));
-
+        const char* opts[2] = { "1. HOST EVACUATION LOBBY", "2. JOIN BY SECRET CODE" };
         for (int i = 0; i < 2; ++i) {
-            bool isSelected = (multiChoiceIndex == i);
-            int yPos = itemY + i * 36;
+            int y = 92 + i * 48;
+            bool sel = (multiChoiceIndex == i);
+            painter.fillRect(QRect(60, y, 280, 36), sel ? QColor(225, 120, 25, 55) : QColor(20, 18, 24));
+            painter.setPen(QPen(sel ? QColor(245, 175, 45) : QColor(65, 65, 75), 1));
+            painter.drawRect(QRect(60, y, 280, 36));
+            painter.setFont(QFont("Arial", 8, QFont::Bold));
+            painter.setPen(sel ? Qt::white : QColor(150, 150, 160));
+            painter.drawText(QRect(60, y, 280, 36), Qt::AlignCenter, opts[i]);
+        }
+        painter.setFont(QFont("Arial", 6));
+        painter.setPen(QColor(170, 170, 175));
+        painter.drawText(QRect(0, 260, BUFFER_WIDTH, 16), Qt::AlignCenter, "[W/S] Select  •  [ENTER] Confirm  •  [ESC] Back");
+    } else if (multiLobbyState == MultiLobbyState::JOIN_INPUT) {
+        painter.setFont(QFont("Arial", 8, QFont::Bold));
+        painter.setPen(QColor(235, 165, 45));
+        painter.drawText(QRect(40, 72, 320, 18), Qt::AlignCenter, "ENTER SURVIVOR CALLSIGN & CONVOY CODE");
 
-            if (isSelected) {
-                int alpha = static_cast<int>(50 + 25 * std::sin(globalTime * 8.0));
-                painter.fillRect(QRect(boxX + 12, yPos - 4, boxW - 24, 28), QColor(255, 215, 0, alpha));
-                painter.setPen(QPen(QColor(255, 215, 0), 1));
-                painter.drawRect(QRect(boxX + 12, yPos - 4, boxW - 24, 28));
+        auto drawInput = [&](int y, const QString &lbl, const QString &val, bool active) {
+            painter.fillRect(QRect(60, y, 280, 32), QColor(18, 17, 22));
+            painter.setPen(QPen(active ? QColor(245, 175, 45) : QColor(60, 60, 70), 1));
+            painter.drawRect(QRect(60, y, 280, 32));
+            painter.setFont(QFont("Arial", 6, QFont::Bold));
+            painter.setPen(QColor(170, 170, 180));
+            painter.drawText(QRect(68, y + 4, 260, 10), Qt::AlignLeft, lbl);
+            painter.setFont(QFont("Courier New", 9, QFont::Bold));
+            painter.setPen(Qt::white);
+            painter.drawText(QRect(68, y + 15, 260, 14), Qt::AlignLeft, val + (active ? "_" : ""));
+        };
+        drawInput(105, "CALLSIGN", inputPlayerName, activeInputField == 0);
+        drawInput(150, "SECRET CODE", inputSecretCode, activeInputField == 1);
 
-                painter.setFont(QFont("Arial", 8, QFont::Bold));
-                painter.setPen(QColor(255, 225, 30));
-                painter.drawText(QRect(boxX + 16 + chevronOffset, yPos + 3, 20, 16), Qt::AlignLeft | Qt::AlignVCenter, "▶▶");
-                painter.drawText(QRect(boxX + boxW - 36 - chevronOffset, yPos + 3, 20, 16), Qt::AlignRight | Qt::AlignVCenter, "◀◀");
+        painter.setFont(QFont("Arial", 6));
+        painter.setPen(QColor(170, 170, 175));
+        painter.drawText(QRect(0, 260, BUFFER_WIDTH, 16), Qt::AlignCenter, "[TAB] Switch Field  •  [ENTER] Connect  •  [ESC] Back");
+    } else {
+        bool isHost = (multiLobbyState == MultiLobbyState::HOST_SETUP);
+        painter.setFont(QFont("Courier New", 9, QFont::Bold));
+        painter.setPen(QColor(245, 185, 55));
+        painter.drawText(QRect(16, 42, 368, 16), Qt::AlignCenter,
+                         QString("CODE: %1  |  IP: %2")
+                             .arg(networkManager ? networkManager->getSecretCode() : currentSecretCode)
+                             .arg(networkManager ? networkManager->getLocalIP() : "127.0.0.1"));
 
-                painter.setFont(QFont("Arial", 8, QFont::Bold));
+        int stg = networkManager ? networkManager->getSelectedTrack() : static_cast<int>(currentStage);
+        QString stgName = (stg == 0) ? "GARIAHAT (MEDIUM)" : (stg == 1 ? "PARK ST (HARD)" : "HOWRAH BRIDGE (INSANE)");
+        painter.setFont(QFont("Arial", 7, QFont::Bold));
+        painter.setPen(QColor(220, 140, 50));
+        painter.drawText(QRect(16, 62, 368, 14), Qt::AlignCenter, "START SECTOR: " + stgName);
+
+        if (networkManager) {
+            const auto &plist = networkManager->getPlayers();
+            for (size_t i = 0; i < plist.size() && i < 4; ++i) {
+                int py = 86 + static_cast<int>(i) * 32;
+                painter.fillRect(QRect(36, py, 328, 26), QColor(20, 19, 25));
+                painter.setPen(QPen(QColor(70, 68, 78), 1));
+                painter.drawRect(QRect(36, py, 328, 26));
+                painter.setFont(QFont("Arial", 7, QFont::Bold));
                 painter.setPen(Qt::white);
-                painter.drawText(QRect(boxX + 38, yPos + 3, boxW - 76, 16), Qt::AlignCenter, choices[i]);
-            } else {
-                painter.setFont(QFont("Arial", 8, QFont::Bold));
-                painter.setPen(QColor(150, 165, 185));
-                painter.drawText(QRect(boxX + 20, yPos + 3, boxW - 40, 16), Qt::AlignCenter, choices[i]);
+                QString rName = (plist[i].characterId >= 0 && plist[i].characterId < static_cast<int>(vehicles.size()))
+                    ? vehicles[plist[i].characterId].name : "RIG";
+                painter.drawText(QRect(44, py + 6, 170, 14), Qt::AlignLeft, QString("%1 (%2)").arg(plist[i].name, rName));
+                painter.setPen(plist[i].isReady ? QColor(90, 225, 110) : QColor(235, 165, 45));
+                painter.drawText(QRect(240, py + 6, 116, 14), Qt::AlignRight, plist[i].isReady ? "READY" : "PREPARING");
             }
         }
-
-        // Footer Hint
-        QRect hintRect(35, 225, 330, 42);
-        painter.fillRect(hintRect, QColor(16, 20, 32, 220));
-        painter.setPen(QPen(QColor(50, 60, 80), 1));
-        painter.drawRoundedRect(hintRect, 6, 6);
-
-        painter.setFont(QFont("Arial", 6, QFont::Bold));
-        painter.setPen(QColor(255, 215, 0));
-        painter.drawText(QRect(35, 230, 330, 14), Qt::AlignCenter, "▲/▼ or W/S: NAVIGATE  •  ENTER / SPACE: SELECT");
-        painter.setPen(QColor(0, 229, 255));
-        painter.drawText(QRect(35, 246, 330, 14), Qt::AlignCenter, "PRESS [1] OR [2] FOR INSTANT PICK  •  [ESC] MAIN MENU");
-    }
-    else if (multiLobbyState == MultiLobbyState::HOST_SETUP) {
-        // Title
-        painter.setFont(QFont("Arial", 11, QFont::Bold));
-        painter.setPen(QColor(255, 220, 30));
-        painter.drawText(QRect(0, 14, BUFFER_WIDTH, 18), Qt::AlignCenter, "★ MULTIPLAYER LOBBY (HOST) ★");
-
-        // Big Secret Code Card
-        QRect codeCard(25, 36, BUFFER_WIDTH - 50, 56);
-        painter.fillRect(codeCard, QColor(18, 24, 44, 245));
-        painter.setPen(QPen(QColor(255, 215, 0), 2));
-        painter.drawRoundedRect(codeCard, 6, 6);
-
-        painter.setFont(QFont("Arial", 6, QFont::Bold));
-        painter.setPen(QColor(0, 229, 255));
-        painter.drawText(QRect(25, 40, BUFFER_WIDTH - 50, 12), Qt::AlignCenter, "— GROUP SECRET CODE —");
-
-        // Code in huge font
-        QFont codeFont("Courier New", 18, QFont::Black);
-        codeFont.setBold(true);
-        painter.setFont(codeFont);
-        painter.setPen(QColor(255, 225, 30));
-        painter.drawText(QRect(25, 52, BUFFER_WIDTH - 50, 24), Qt::AlignCenter, currentSecretCode);
-
-        painter.setFont(QFont("Arial", 5, QFont::Normal));
-        painter.setPen(QColor(200, 215, 235));
-        painter.drawText(QRect(25, 77, BUFFER_WIDTH - 50, 11), Qt::AlignCenter,
-                         QString("TELL FRIENDS TO ENTER THIS CODE  •  HOST IP: %1").arg(networkManager ? networkManager->getLocalIP() : ""));
-
-        // Settings Row (Course & Character)
-        QRect settingsCard(25, 96, BUFFER_WIDTH - 50, 34);
-        painter.fillRect(settingsCard, QColor(16, 20, 36, 230));
-        painter.setPen(QPen(QColor(50, 65, 90), 1));
-        painter.drawRect(settingsCard);
-
-        QString trackName = (currentLevel == TrackLevel::DONUT_PLAINS) ? "DONUT PLAINS" :
-                            (currentLevel == TrackLevel::CHOCO_VALLEY) ? "CHOCO VALLEY" : "BOWSER CASTLE";
-        const auto &p1Char = getSelectedCharacterP1();
-
-        painter.setFont(QFont("Arial", 6, QFont::Bold));
-        painter.setPen(QColor(255, 215, 0));
-        painter.drawText(QRect(32, 100, 160, 12), Qt::AlignLeft, QString("COURSE: %1 [1-3]").arg(trackName));
-        painter.setPen(p1Char.secondaryColor);
-        painter.drawText(QRect(32, 114, 160, 12), Qt::AlignLeft, QString("YOUR RACER: %1 [A/D]").arg(p1Char.name));
-
-        painter.setFont(QFont("Arial", 6, QFont::Normal));
-        painter.setPen(QColor(160, 180, 210));
-        painter.drawText(QRect(195, 100, 170, 26), Qt::AlignRight | Qt::AlignVCenter, "KEYS 1, 2, 3: CHANGE COURSE\nA/D: CHANGE RACER");
-
-        // Racers Roster Box
-        QRect rosterCard(25, 134, BUFFER_WIDTH - 50, 78);
-        painter.fillRect(rosterCard, QColor(12, 16, 28, 235));
-        painter.setPen(QPen(QColor(60, 75, 105), 1));
-        painter.drawRect(rosterCard);
-
-        painter.setFont(QFont("Arial", 6, QFont::Bold));
-        painter.setPen(QColor(255, 215, 0));
-        int numP = networkManager ? static_cast<int>(networkManager->getPlayers().size()) : 1;
-        painter.drawText(QRect(32, 138, 200, 12), Qt::AlignLeft, QString("RACERS CONNECTED (%1/4):").arg(numP));
-
-        if (networkManager) {
-            const auto &pList = networkManager->getPlayers();
-            int rY = 153;
-            for (size_t i = 0; i < pList.size() && i < 4; ++i) {
-                const auto &p = pList[i];
-                QString pCharName = (p.characterId >= 0 && p.characterId < static_cast<int>(characters.size()))
-                                        ? characters[p.characterId].name : "MARIO";
-                painter.setFont(QFont("Arial", 6, QFont::Bold));
-                painter.setPen(p.isHost ? QColor(255, 215, 0) : Qt::white);
-                painter.drawText(QRect(35, rY, 120, 12), Qt::AlignLeft, QString("%1. %2 %3").arg(i + 1).arg(p.name).arg(p.isHost ? "(HOST)" : ""));
-
-                painter.setFont(QFont("Arial", 6, QFont::Normal));
-                painter.setPen(QColor(160, 185, 215));
-                painter.drawText(QRect(160, rY, 90, 12), Qt::AlignLeft, pCharName);
-
-                painter.setFont(QFont("Arial", 6, QFont::Bold));
-                if (p.isReady) {
-                    painter.setPen(QColor(80, 240, 120));
-                    painter.drawText(QRect(260, rY, 105, 12), Qt::AlignRight, "✓ READY");
-                } else {
-                    painter.setPen(QColor(255, 160, 40));
-                    painter.drawText(QRect(260, rY, 105, 12), Qt::AlignRight, "... SELECTING");
-                }
-                rY += 15;
-            }
-            if (pList.size() <= 1) {
-                painter.setFont(QFont("Arial", 6, QFont::Normal));
-                painter.setPen(QColor(0, 229, 255));
-                painter.drawText(QRect(32, 175, BUFFER_WIDTH - 64, 14), Qt::AlignCenter,
-                                 QString("WAITING FOR RACERS TO JOIN WITH SECRET CODE \"%1\"...").arg(currentSecretCode));
-            }
-        }
-
-        // Action Button
-        QRect btnRect(25, 218, BUFFER_WIDTH - 50, 36);
-        bool canStart = networkManager && networkManager->allPlayersReady();
-        if (canStart) {
-            int alpha = static_cast<int>(180 + 75 * std::sin(globalTime * 8.0));
-            painter.fillRect(btnRect, QColor(40, 160, 60, alpha));
-            painter.setPen(QPen(QColor(255, 215, 0), 2));
-            painter.drawRoundedRect(btnRect, 6, 6);
-
-            painter.setFont(QFont("Arial", 9, QFont::Bold));
-            painter.setPen(Qt::white);
-            painter.drawText(btnRect, Qt::AlignCenter, "▶▶ PRESS [ENTER] OR [SPACE] TO START RACE! ◀◀");
-        } else {
-            painter.fillRect(btnRect, QColor(24, 30, 46, 210));
-            painter.setPen(QPen(QColor(70, 80, 105), 1));
-            painter.drawRoundedRect(btnRect, 6, 6);
-
-            painter.setFont(QFont("Arial", 7, QFont::Bold));
-            painter.setPen(QColor(160, 175, 200));
-            painter.drawText(btnRect, Qt::AlignCenter, "WAITING FOR ALL RACERS TO BE READY...");
-        }
-
-        // Footer
         painter.setFont(QFont("Arial", 6));
-        painter.setPen(QColor(140, 155, 180));
-        painter.drawText(QRect(0, 262, BUFFER_WIDTH, 14), Qt::AlignCenter,
-                         "KEYS 1-3: COURSE  •  A/D: RACER  •  [ESC] CLOSE LOBBY");
-    }
-    else if (multiLobbyState == MultiLobbyState::JOIN_INPUT) {
-        // Title
-        painter.setFont(QFont("Arial", 12, QFont::Bold));
-        painter.setPen(QColor(255, 220, 30));
-        painter.drawText(QRect(0, 16, BUFFER_WIDTH, 20), Qt::AlignCenter, "★ JOIN MULTIPLAYER RACE ★");
-
-        painter.setFont(QFont("Arial", 6, QFont::Bold));
-        painter.setPen(QColor(0, 229, 255));
-        painter.drawText(QRect(0, 38, BUFFER_WIDTH, 12), Qt::AlignCenter, "CONNECT TO A HOST OVER THE SAME WI-FI / LOCAL NETWORK");
-
-        // Input Card
-        QRect cardRect(35, 56, BUFFER_WIDTH - 70, 140);
-        painter.fillRect(cardRect, QColor(14, 18, 32, 240));
-        painter.setPen(QPen(QColor(255, 215, 0), 2));
-        painter.drawRoundedRect(cardRect, 6, 6);
-
-        // Field 0: Player Name
-        bool nameFocused = (activeInputField == 0);
-        QRect nameBox(55, 86, BUFFER_WIDTH - 110, 26);
-        painter.fillRect(nameBox, QColor(8, 12, 22));
-        painter.setPen(QPen(nameFocused ? QColor(255, 215, 0) : QColor(50, 65, 90), nameFocused ? 2 : 1));
-        painter.drawRect(nameBox);
-
-        painter.setFont(QFont("Arial", 6, QFont::Bold));
-        painter.setPen(nameFocused ? QColor(255, 215, 0) : QColor(160, 175, 200));
-        painter.drawText(QRect(55, 70, 200, 14), Qt::AlignLeft, "YOUR RACER NAME:");
-
-        painter.setFont(QFont("Arial", 9, QFont::Bold));
-        painter.setPen(Qt::white);
-        QString nameDisp = inputPlayerName + (nameFocused && std::fmod(globalTime * 2.0, 1.0) > 0.5 ? "_" : "");
-        painter.drawText(nameBox.adjusted(8, 0, -8, 0), Qt::AlignLeft | Qt::AlignVCenter, nameDisp);
-
-        // Field 1: Secret Code
-        bool codeFocused = (activeInputField == 1);
-        QRect codeBox(55, 138, BUFFER_WIDTH - 110, 28);
-        painter.fillRect(codeBox, QColor(8, 12, 22));
-        painter.setPen(QPen(codeFocused ? QColor(255, 215, 0) : QColor(50, 65, 90), codeFocused ? 2 : 1));
-        painter.drawRect(codeBox);
-
-        painter.setFont(QFont("Arial", 6, QFont::Bold));
-        painter.setPen(codeFocused ? QColor(255, 215, 0) : QColor(160, 175, 200));
-        painter.drawText(QRect(55, 122, 200, 14), Qt::AlignLeft, "GROUP SECRET CODE (FROM HOST SCREEN):");
-
-        QFont codeF("Courier New", 12, QFont::Bold);
-        painter.setFont(codeF);
-        painter.setPen(QColor(255, 225, 30));
-        QString codeDisp = inputSecretCode + (codeFocused && std::fmod(globalTime * 2.0, 1.0) > 0.5 ? "_" : "");
-        painter.drawText(codeBox.adjusted(8, 0, -8, 0), Qt::AlignLeft | Qt::AlignVCenter, codeDisp);
-
-        // Status Message Banner
-        QString stat = networkManager ? networkManager->getStatusMessage() : "";
-        if (stat.isEmpty()) stat = "TYPE SECRET CODE & PRESS [ENTER] TO SEARCH LAN";
-        painter.setFont(QFont("Arial", 6, QFont::Bold));
-        painter.setPen(stat.contains("FOUND") || stat.contains("CONNECTED") ? QColor(80, 240, 120) : QColor(0, 229, 255));
-        painter.drawText(QRect(20, 204, BUFFER_WIDTH - 40, 14), Qt::AlignCenter, stat);
-
-        // Action & Footer
-        QRect actionBox(35, 222, BUFFER_WIDTH - 70, 36);
-        painter.fillRect(actionBox, QColor(18, 24, 42, 220));
-        painter.setPen(QPen(QColor(255, 215, 0), 1));
-        painter.drawRoundedRect(actionBox, 4, 4);
-
-        painter.setFont(QFont("Arial", 7, QFont::Bold));
-        painter.setPen(QColor(255, 215, 0));
-        painter.drawText(QRect(35, 226, BUFFER_WIDTH - 70, 14), Qt::AlignCenter, "PRESS [ENTER] TO JOIN  •  [TAB] SWITCH FIELD");
-        painter.setFont(QFont("Arial", 6));
-        painter.setPen(QColor(160, 180, 210));
-        painter.drawText(QRect(35, 240, BUFFER_WIDTH - 70, 14), Qt::AlignCenter, "PRESS [ESC] TO CANCEL");
-    }
-    else if (multiLobbyState == MultiLobbyState::WAITING_ROOM) {
-        // Connected Client Waiting Room
-        painter.setFont(QFont("Arial", 11, QFont::Bold));
-        painter.setPen(QColor(255, 220, 30));
-        painter.drawText(QRect(0, 14, BUFFER_WIDTH, 18), Qt::AlignCenter, "★ MULTIPLAYER LOBBY ★");
-
-        // Info Card
-        QRect infoCard(25, 36, BUFFER_WIDTH - 50, 40);
-        painter.fillRect(infoCard, QColor(18, 24, 44, 245));
-        painter.setPen(QPen(QColor(255, 215, 0), 2));
-        painter.drawRoundedRect(infoCard, 6, 6);
-
-        QString trackName = (currentLevel == TrackLevel::DONUT_PLAINS) ? "DONUT PLAINS" :
-                            (currentLevel == TrackLevel::CHOCO_VALLEY) ? "CHOCO VALLEY" : "BOWSER CASTLE";
-        painter.setFont(QFont("Arial", 7, QFont::Bold));
-        painter.setPen(QColor(0, 229, 255));
-        painter.drawText(QRect(35, 42, 160, 14), Qt::AlignLeft, QString("SECRET CODE: %1").arg(networkManager ? networkManager->getSecretCode() : ""));
-        painter.setPen(QColor(255, 215, 0));
-        painter.drawText(QRect(35, 58, 160, 14), Qt::AlignLeft, QString("COURSE: %1").arg(trackName));
-
-        // Connected Racers Box
-        QRect rosterBox(25, 82, BUFFER_WIDTH - 50, 84);
-        painter.fillRect(rosterBox, QColor(12, 16, 28, 235));
-        painter.setPen(QPen(QColor(60, 75, 105), 1));
-        painter.drawRect(rosterBox);
-
-        painter.setFont(QFont("Arial", 6, QFont::Bold));
-        painter.setPen(QColor(255, 215, 0));
-        painter.drawText(QRect(32, 86, 200, 12), Qt::AlignLeft, "RACERS IN LOBBY:");
-
-        int myLocalId = networkManager ? networkManager->getLocalPlayerId() : 1;
-        bool myReady = false;
-
-        if (networkManager) {
-            const auto &pList = networkManager->getPlayers();
-            int rY = 101;
-            for (size_t i = 0; i < pList.size() && i < 4; ++i) {
-                const auto &p = pList[i];
-                if (p.id == myLocalId) myReady = p.isReady;
-
-                QString pCharName = (p.characterId >= 0 && p.characterId < static_cast<int>(characters.size()))
-                                        ? characters[p.characterId].name : "MARIO";
-                painter.setFont(QFont("Arial", 6, QFont::Bold));
-                painter.setPen(p.id == myLocalId ? QColor(255, 225, 30) : Qt::white);
-                painter.drawText(QRect(35, rY, 130, 12), Qt::AlignLeft, QString("%1. %2 %3").arg(i + 1).arg(p.name).arg(p.id == myLocalId ? "(YOU)" : ""));
-
-                painter.setFont(QFont("Arial", 6, QFont::Normal));
-                painter.setPen(QColor(160, 185, 215));
-                painter.drawText(QRect(170, rY, 90, 12), Qt::AlignLeft, pCharName);
-
-                painter.setFont(QFont("Arial", 6, QFont::Bold));
-                if (p.isReady) {
-                    painter.setPen(QColor(80, 240, 120));
-                    painter.drawText(QRect(260, rY, 105, 12), Qt::AlignRight, "✓ READY");
-                } else {
-                    painter.setPen(QColor(255, 160, 40));
-                    painter.drawText(QRect(260, rY, 105, 12), Qt::AlignRight, "... SELECTING");
-                }
-                rY += 15;
-            }
-        }
-
-        // Selection Controls Card
-        QRect ctrlCard(25, 172, BUFFER_WIDTH - 50, 40);
-        painter.fillRect(ctrlCard, QColor(16, 22, 38, 240));
-        painter.setPen(QPen(QColor(50, 65, 95), 1));
-        painter.drawRect(ctrlCard);
-
-        const auto &p1Char = getSelectedCharacterP1();
-        painter.setFont(QFont("Arial", 6, QFont::Bold));
-        painter.setPen(p1Char.secondaryColor);
-        painter.drawText(QRect(32, 178, 170, 14), Qt::AlignLeft, QString("YOUR RACER: < %1 >").arg(p1Char.name));
-        painter.setFont(QFont("Arial", 5));
-        painter.setPen(QColor(150, 170, 200));
-        painter.drawText(QRect(32, 194, 170, 14), Qt::AlignLeft, "[◄ / ► or A / D] CHANGE RACER");
-
-        // Ready Button
-        QRect readyBtn(210, 176, 150, 32);
-        if (myReady) {
-            painter.fillRect(readyBtn, QColor(35, 150, 55));
-            painter.setPen(QPen(QColor(255, 255, 255), 1));
-            painter.drawRoundedRect(readyBtn, 4, 4);
-            painter.setFont(QFont("Arial", 7, QFont::Bold));
-            painter.setPen(Qt::white);
-            painter.drawText(readyBtn, Qt::AlignCenter, "✓ YOU ARE READY!\n[SPACE] CANCEL");
-        } else {
-            int glow = static_cast<int>(180 + 75 * std::sin(globalTime * 8.0));
-            painter.fillRect(readyBtn, QColor(220, 140, 20, glow));
-            painter.setPen(QPen(QColor(255, 215, 0), 1));
-            painter.drawRoundedRect(readyBtn, 4, 4);
-            painter.setFont(QFont("Arial", 7, QFont::Bold));
-            painter.setPen(Qt::white);
-            painter.drawText(readyBtn, Qt::AlignCenter, "PRESS [SPACE]\nTO READY UP!");
-        }
-
-        // Status Banner
-        QRect statusBox(25, 218, BUFFER_WIDTH - 50, 36);
-        painter.fillRect(statusBox, QColor(14, 18, 30, 220));
-        painter.setPen(QPen(QColor(255, 215, 0), 1));
-        painter.drawRoundedRect(statusBox, 4, 4);
-
-        painter.setFont(QFont("Arial", 7, QFont::Bold));
-        painter.setPen(QColor(0, 229, 255));
-        painter.drawText(statusBox, Qt::AlignCenter, "WAITING FOR HOST TO START THE RACE...");
-
-        // Footer
-        painter.setFont(QFont("Arial", 6));
-        painter.setPen(QColor(140, 155, 180));
-        painter.drawText(QRect(0, 262, BUFFER_WIDTH, 14), Qt::AlignCenter,
-                         "A/D: CHANGE RACER  •  [SPACE] READY  •  [ESC] LEAVE LOBBY");
+        painter.setPen(QColor(180, 180, 185));
+        painter.drawText(QRect(0, 260, BUFFER_WIDTH, 16), Qt::AlignCenter,
+                         isHost ? "[A/D] Rig  •  [1-3] Stage  •  [ENTER] Launch Convoy  •  [ESC] Cancel"
+                                : "[A/D] Rig  •  [SPACE] Ready  •  [ESC] Leave");
     }
 }
 
@@ -3866,285 +3331,100 @@ void GameCanvas::renderMultiplayerRankings()
 {
     QPainter painter(&screenBuffer);
     painter.setRenderHint(QPainter::Antialiasing, false);
+    painter.fillRect(QRect(30, 50, BUFFER_WIDTH - 60, 200), QColor(12, 10, 14, 240));
+    painter.setPen(QPen(QColor(245, 165, 35), 2));
+    painter.drawRect(QRect(30, 50, BUFFER_WIDTH - 60, 200));
 
-    // Dark semi-transparent backdrop over the 3D track
-    painter.fillRect(QRect(15, 15, BUFFER_WIDTH - 30, BUFFER_HEIGHT - 30), QColor(10, 14, 26, 240));
-    painter.setPen(QPen(QColor(255, 215, 0), 2));
-    painter.drawRoundedRect(QRect(15, 15, BUFFER_WIDTH - 30, BUFFER_HEIGHT - 30), 6, 6);
+    painter.setFont(QFont("Courier New", 11, QFont::Bold));
+    painter.setPen(QColor(245, 185, 50));
+    painter.drawText(QRect(30, 58, BUFFER_WIDTH - 60, 20), Qt::AlignCenter, "EVACUATION CONVOY RANKINGS");
 
-    // Inner gold border
-    painter.setPen(QPen(QColor(255, 215, 0, 80), 1));
-    painter.drawRoundedRect(QRect(18, 18, BUFFER_WIDTH - 36, BUFFER_HEIGHT - 36), 4, 4);
-
-    // Header Checkered Ribbon
-    int squareSize = 6;
-    for (int x = 20; x < BUFFER_WIDTH - 20; x += squareSize) {
-        bool isWhite = ((x / squareSize) % 2 == 0);
-        painter.fillRect(x, 22, squareSize, 5, isWhite ? QColor(255, 255, 255) : QColor(20, 20, 25));
-    }
-
-    // Title
-    QFont titleFont("Arial", 11, QFont::Bold);
-    painter.setFont(titleFont);
-    painter.setPen(QColor(0, 0, 0));
-    painter.drawText(QRect(21, 31, BUFFER_WIDTH - 40, 20), Qt::AlignCenter, "★ MULTIPLAYER RACE RESULTS ★");
-    painter.setPen(QColor(255, 220, 30));
-    painter.drawText(QRect(20, 30, BUFFER_WIDTH - 40, 20), Qt::AlignCenter, "★ MULTIPLAYER RACE RESULTS ★");
-
-    // Track name & Secret Code info
-    QString trackName = (currentLevel == TrackLevel::DONUT_PLAINS) ? "DONUT PLAINS" :
-                        (currentLevel == TrackLevel::CHOCO_VALLEY) ? "CHOCO VALLEY" : "BOWSER CASTLE";
-    QFont subFont("Arial", 6, QFont::Bold);
-    painter.setFont(subFont);
-    painter.setPen(QColor(0, 229, 255));
-    painter.drawText(QRect(20, 50, BUFFER_WIDTH - 40, 12), Qt::AlignCenter,
-                     QString("COURSE: %1  •  GROUP CODE: %2").arg(trackName, networkManager ? networkManager->getSecretCode() : ""));
-
-    // Table Header
-    int tableY = 66;
-    painter.fillRect(QRect(25, tableY, BUFFER_WIDTH - 50, 14), QColor(24, 32, 54));
-    painter.setPen(QColor(180, 195, 220));
-    painter.setFont(QFont("Arial", 6, QFont::Bold));
-    painter.drawText(QRect(30, tableY, 40, 14), Qt::AlignLeft | Qt::AlignVCenter, "POS");
-    painter.drawText(QRect(80, tableY, 110, 14), Qt::AlignLeft | Qt::AlignVCenter, "RACER");
-    painter.drawText(QRect(200, tableY, 70, 14), Qt::AlignLeft | Qt::AlignVCenter, "KART");
-    painter.drawText(QRect(280, tableY, 80, 14), Qt::AlignRight | Qt::AlignVCenter, "TIME");
-
-    // Gather and sort all players
-    struct ResultEntry {
-        int id;
-        QString name;
-        int characterId;
-        bool isLocal;
-        bool finished;
-        double time;
-        int placement;
-    };
-    std::vector<ResultEntry> results;
-
-    int myLocalId = networkManager ? networkManager->getLocalPlayerId() : 0;
     if (networkManager) {
-        for (const auto &p : networkManager->getPlayers()) {
-            results.push_back({ p.id, p.name, p.characterId, (p.id == myLocalId), p.raceFinished, p.finishTime, p.placement });
+        auto plist = networkManager->getPlayers();
+        std::sort(plist.begin(), plist.end(), [](const NetPlayer &a, const NetPlayer &b) {
+            if (a.isEliminated != b.isEliminated) return !a.isEliminated;
+            if (a.raceFinished != b.raceFinished) return a.raceFinished;
+            if (a.raceFinished && b.raceFinished) return a.finishTime < b.finishTime;
+            return a.progressMeters > b.progressMeters;
+        });
+
+        for (size_t i = 0; i < plist.size() && i < 4; ++i) {
+            int y = 88 + static_cast<int>(i) * 30;
+            painter.fillRect(QRect(48, y, BUFFER_WIDTH - 96, 24), QColor(22, 20, 26));
+            painter.setFont(QFont("Arial", 7, QFont::Bold));
+            painter.setPen(Qt::white);
+            painter.drawText(QRect(56, y + 5, 160, 14), Qt::AlignLeft,
+                             QString("#%1  %2").arg(i + 1).arg(plist[i].name));
+            painter.setPen(plist[i].isEliminated ? QColor(255, 70, 60) : QColor(110, 235, 120));
+            QString status = plist[i].isEliminated ? "ELIMINATED"
+                : (plist[i].raceFinished ? QString("%1s").arg(QString::number(plist[i].finishTime, 'f', 1)) : "ESCAPING...");
+            painter.drawText(QRect(230, y + 5, 110, 14), Qt::AlignRight, status);
         }
-    } else {
-        results.push_back({ 0, "PLAYER 1", selectedCharP1, true, true, raceElapsedTime, 1 });
     }
 
-    std::sort(results.begin(), results.end(), [](const ResultEntry &a, const ResultEntry &b) {
-        if (a.finished && b.finished) return a.time < b.time;
-        if (a.finished && !b.finished) return true;
-        if (!a.finished && b.finished) return false;
-        return a.id < b.id;
-    });
-
-    int rowY = tableY + 16;
-    for (size_t i = 0; i < results.size() && i < 6; ++i) {
-        const auto &res = results[i];
-        int pos = static_cast<int>(i + 1);
-
-        if (res.isLocal) {
-            painter.fillRect(QRect(25, rowY - 1, BUFFER_WIDTH - 50, 19), QColor(255, 215, 0, 35));
-            painter.setPen(QPen(QColor(255, 215, 0, 120), 1));
-            painter.drawRect(QRect(25, rowY - 1, BUFFER_WIDTH - 50, 19));
-        } else {
-            painter.fillRect(QRect(25, rowY - 1, BUFFER_WIDTH - 50, 19), QColor(16, 20, 34, 180));
-        }
-
-        QColor medalColor;
-        QString posText;
-        if (pos == 1) { medalColor = QColor(255, 215, 0); posText = "1ST 👑"; }
-        else if (pos == 2) { medalColor = QColor(200, 210, 225); posText = "2ND"; }
-        else if (pos == 3) { medalColor = QColor(205, 127, 50); posText = "3RD"; }
-        else { medalColor = QColor(140, 155, 180); posText = QString("%1TH").arg(pos); }
-
-        painter.setFont(QFont("Arial", 7, QFont::Bold));
-        painter.setPen(medalColor);
-        painter.drawText(QRect(30, rowY, 45, 17), Qt::AlignLeft | Qt::AlignVCenter, posText);
-
-        QString displayName = res.name;
-        if (res.isLocal) displayName += " (YOU)";
-        painter.setFont(QFont("Arial", 7, QFont::Bold));
-        painter.setPen(res.isLocal ? QColor(255, 235, 60) : Qt::white);
-        painter.drawText(QRect(80, rowY, 110, 17), Qt::AlignLeft | Qt::AlignVCenter, displayName);
-
-        QString charName = "MARIO";
-        if (res.characterId >= 0 && res.characterId < static_cast<int>(characters.size())) {
-            charName = characters[res.characterId].name;
-        }
-        painter.setFont(QFont("Arial", 6, QFont::Normal));
-        painter.setPen(QColor(160, 180, 210));
-        painter.drawText(QRect(200, rowY, 70, 17), Qt::AlignLeft | Qt::AlignVCenter, charName);
-
-        QString timeStr;
-        if (res.finished) {
-            int mins = static_cast<int>(res.time) / 60;
-            double secs = std::fmod(res.time, 60.0);
-            timeStr = QString("%1:%2").arg(mins).arg(secs, 5, 'f', 2, QChar('0'));
-            painter.setPen(QColor(80, 240, 120));
-        } else {
-            timeStr = "RACING...";
-            painter.setPen(QColor(255, 180, 50));
-        }
-        painter.setFont(QFont("Courier New", 7, QFont::Bold));
-        painter.drawText(QRect(280, rowY, 80, 17), Qt::AlignRight | Qt::AlignVCenter, timeStr);
-
-        rowY += 21;
-    }
-
-    // Bottom Action Prompt
-    QRect promptRect(25, BUFFER_HEIGHT - 54, BUFFER_WIDTH - 50, 28);
-    painter.fillRect(promptRect, QColor(18, 24, 40, 230));
-    painter.setPen(QPen(QColor(60, 75, 105), 1));
-    painter.drawRoundedRect(promptRect, 4, 4);
-
-    bool isHost = (networkManager && networkManager->isHost());
     painter.setFont(QFont("Arial", 6, QFont::Bold));
-    if (isHost) {
-        painter.setPen(QColor(255, 215, 0));
-        painter.drawText(QRect(25, BUFFER_HEIGHT - 52, BUFFER_WIDTH - 50, 12), Qt::AlignCenter,
-                         "[R] REMATCH (RETURN TO LOBBY)  •  [ESC] MAIN MENU");
-    } else {
-        painter.setPen(QColor(0, 229, 255));
-        painter.drawText(QRect(25, BUFFER_HEIGHT - 52, BUFFER_WIDTH - 50, 12), Qt::AlignCenter,
-                         "WAITING FOR HOST TO START REMATCH...  •  [ESC] LEAVE");
-    }
-    painter.setPen(QColor(140, 155, 180));
-    painter.drawText(QRect(25, BUFFER_HEIGHT - 38, BUFFER_WIDTH - 50, 12), Qt::AlignCenter,
-                     "PRESS R TO RETURN ALL RACERS TO LOBBY WITH CODE KEPT");
+    painter.setPen(QColor(245, 175, 45));
+    painter.drawText(QRect(30, 224, BUFFER_WIDTH - 60, 16), Qt::AlignCenter, "[ENTER / ESC] RETURN TO LOBBY");
 }
 
 void GameCanvas::handleMultiplayerLobbyInput(QKeyEvent *event)
 {
     int key = event->key();
+    if (!networkManager) return;
 
     if (multiLobbyState == MultiLobbyState::MODE_CHOICE) {
-        if (key == Qt::Key_Up || key == Qt::Key_W) {
-            multiChoiceIndex = (multiChoiceIndex - 1 + 2) % 2;
-            update();
-        } else if (key == Qt::Key_Down || key == Qt::Key_S) {
-            multiChoiceIndex = (multiChoiceIndex + 1) % 2;
-            update();
-        } else if (key == Qt::Key_1) {
-            multiChoiceIndex = 0;
-            currentSecretCode = generateSecretCode();
-            networkManager->startHosting(currentSecretCode, hostPlayerName, static_cast<int>(currentLevel));
-            multiLobbyState = MultiLobbyState::HOST_SETUP;
-            update();
-        } else if (key == Qt::Key_2) {
-            multiChoiceIndex = 1;
-            inputSecretCode.clear();
-            activeInputField = 1;
-            multiLobbyState = MultiLobbyState::JOIN_INPUT;
-            update();
+        if (key == Qt::Key_W || key == Qt::Key_Up || key == Qt::Key_S || key == Qt::Key_Down) {
+            multiChoiceIndex = 1 - multiChoiceIndex;
         } else if (key == Qt::Key_Return || key == Qt::Key_Enter || key == Qt::Key_Space) {
             if (multiChoiceIndex == 0) {
                 currentSecretCode = generateSecretCode();
-                networkManager->startHosting(currentSecretCode, hostPlayerName, static_cast<int>(currentLevel));
+                networkManager->startHosting(currentSecretCode, hostPlayerName, static_cast<int>(currentStage));
                 multiLobbyState = MultiLobbyState::HOST_SETUP;
             } else {
-                inputSecretCode.clear();
-                activeInputField = 1;
                 multiLobbyState = MultiLobbyState::JOIN_INPUT;
-            }
-            update();
-        } else if (key == Qt::Key_Escape) {
-            setGameState(GameState::TITLE_MENU);
-        }
-    }
-    else if (multiLobbyState == MultiLobbyState::HOST_SETUP) {
-        if (key == Qt::Key_1) {
-            setTrackLevel(TrackLevel::DONUT_PLAINS);
-            if (networkManager) networkManager->setTrackLevel(0);
-            update();
-        } else if (key == Qt::Key_2) {
-            setTrackLevel(TrackLevel::CHOCO_VALLEY);
-            if (networkManager) networkManager->setTrackLevel(1);
-            update();
-        } else if (key == Qt::Key_3) {
-            setTrackLevel(TrackLevel::BOWSER_CASTLE);
-            if (networkManager) networkManager->setTrackLevel(2);
-            update();
-        } else if (key == Qt::Key_Left || key == Qt::Key_A) {
-            selectedCharP1 = (selectedCharP1 - 1 + 4) % 4;
-            if (networkManager) networkManager->setCharacter(selectedCharP1);
-            update();
-        } else if (key == Qt::Key_Right || key == Qt::Key_D) {
-            selectedCharP1 = (selectedCharP1 + 1) % 4;
-            if (networkManager) networkManager->setCharacter(selectedCharP1);
-            update();
-        } else if (key == Qt::Key_Return || key == Qt::Key_Enter || key == Qt::Key_Space) {
-            if (networkManager && networkManager->allPlayersReady()) {
-                networkManager->startRace();
+                activeInputField = 1;
             }
         } else if (key == Qt::Key_Escape) {
-            if (networkManager) networkManager->disconnectNetwork();
-            multiLobbyState = MultiLobbyState::MODE_CHOICE;
-            update();
+            currentState = GameState::TITLE_MENU;
         }
-    }
-    else if (multiLobbyState == MultiLobbyState::JOIN_INPUT) {
-        if (key == Qt::Key_Tab || key == Qt::Key_Up || key == Qt::Key_Down) {
-            activeInputField = (activeInputField == 0) ? 1 : 0;
-            update();
+    } else if (multiLobbyState == MultiLobbyState::JOIN_INPUT) {
+        if (key == Qt::Key_Tab) {
+            activeInputField = 1 - activeInputField;
         } else if (key == Qt::Key_Backspace) {
-            if (activeInputField == 0 && !inputPlayerName.isEmpty()) {
-                inputPlayerName.chop(1);
-                update();
-            } else if (activeInputField == 1 && !inputSecretCode.isEmpty()) {
-                inputSecretCode.chop(1);
-                update();
-            }
+            QString &target = (activeInputField == 0) ? inputPlayerName : inputSecretCode;
+            if (!target.isEmpty()) target.chop(1);
         } else if (key == Qt::Key_Return || key == Qt::Key_Enter) {
             if (!inputSecretCode.trimmed().isEmpty()) {
-                networkManager->startJoining(inputSecretCode.trimmed(), inputPlayerName.trimmed());
+                networkManager->startJoining(inputSecretCode.trimmed().toUpper(), inputPlayerName.trimmed());
                 multiLobbyState = MultiLobbyState::WAITING_ROOM;
-                update();
             }
         } else if (key == Qt::Key_Escape) {
-            if (networkManager) networkManager->disconnectNetwork();
             multiLobbyState = MultiLobbyState::MODE_CHOICE;
-            update();
-        } else {
-            QString txt = event->text();
-            for (QChar ch : txt) {
-                if (ch.isLetterOrNumber() || ch == ' ') {
-                    if (activeInputField == 0 && inputPlayerName.length() < 12) {
-                        inputPlayerName.append(ch);
-                        update();
-                    } else if (activeInputField == 1 && inputSecretCode.length() < 8) {
-                        if (ch.isLetterOrNumber()) {
-                            inputSecretCode.append(ch.toUpper());
-                            update();
-                        }
-                    }
-                }
-            }
+        } else if (!event->text().isEmpty() && event->text().at(0).isPrint()) {
+            QString &target = (activeInputField == 0) ? inputPlayerName : inputSecretCode;
+            if (target.length() < 12) target += event->text().toUpper();
         }
-    }
-    else if (multiLobbyState == MultiLobbyState::WAITING_ROOM) {
-        if (key == Qt::Key_Left || key == Qt::Key_A) {
-            selectedCharP1 = (selectedCharP1 - 1 + 4) % 4;
-            if (networkManager) networkManager->setCharacter(selectedCharP1);
-            update();
-        } else if (key == Qt::Key_Right || key == Qt::Key_D) {
-            selectedCharP1 = (selectedCharP1 + 1) % 4;
-            if (networkManager) networkManager->setCharacter(selectedCharP1);
-            update();
-        } else if (key == Qt::Key_Space) {
-            bool curReady = false;
-            if (networkManager) {
-                const NetPlayer *p = networkManager->getPlayer(networkManager->getLocalPlayerId());
-                if (p) curReady = p->isReady;
-                networkManager->setReady(!curReady);
-            }
-            update();
+    } else {
+        bool isHost = (multiLobbyState == MultiLobbyState::HOST_SETUP);
+        if (key == Qt::Key_A || key == Qt::Key_Left) {
+            selectedVehicleP1 = (selectedVehicleP1 - 1 + 4) % 4;
+            networkManager->setCharacter(selectedVehicleP1);
+        } else if (key == Qt::Key_D || key == Qt::Key_Right) {
+            selectedVehicleP1 = (selectedVehicleP1 + 1) % 4;
+            networkManager->setCharacter(selectedVehicleP1);
+        } else if (isHost && (key == Qt::Key_1 || key == Qt::Key_2 || key == Qt::Key_3)) {
+            int stg = (key == Qt::Key_1) ? 0 : (key == Qt::Key_2 ? 1 : 2);
+            currentStage = static_cast<KolkataStage>(stg);
+            networkManager->setTrackLevel(stg);
+        } else if (isHost && (key == Qt::Key_Return || key == Qt::Key_Enter)) {
+            networkManager->startRace();
+        } else if (!isHost && key == Qt::Key_Space) {
+            const NetPlayer *me = networkManager->getPlayer(networkManager->getLocalPlayerId());
+            networkManager->setReady(me ? !me->isReady : true);
         } else if (key == Qt::Key_Escape) {
-            if (networkManager) networkManager->disconnectNetwork();
+            networkManager->disconnectNetwork();
             multiLobbyState = MultiLobbyState::MODE_CHOICE;
-            update();
         }
     }
+    update();
 }
-
-

@@ -6,41 +6,31 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1000</width>
-    <height>660</height>
+    <width>1040</width>
+    <height>680</height>
    </rect>
   </property>
   <property name="windowTitle">
-   <string>RetroKart 3D - Computer Graphics Engine</string>
+   <string>Kolkata: Last Exit — Apocalyptic Mode-7 Escape</string>
   </property>
   <property name="styleSheet">
    <string notr="true">
-    QMainWindow { background-color: #1e1e24; color: #f0f0f0; }
-    QGroupBox { font-weight: bold; border: 2px solid #3d3d4a; border-radius: 6px; margin-top: 10px; padding-top: 10px; color: #ffcc00; }
+    QMainWindow { background-color: #0e0d10; color: #e6e2dc; }
+    QGroupBox { font-weight: bold; border: 2px solid #352b28; border-radius: 6px; margin-top: 10px; padding-top: 10px; color: #f59b23; }
     QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 10px; padding: 0 4px; }
-    QPushButton { background-color: #2e303e; color: #ffffff; border: 1px solid #4f526b; border-radius: 4px; padding: 6px 12px; font-weight: bold; }
-    QPushButton:hover { background-color: #3f4258; border-color: #ffcc00; }
-    QPushButton:pressed { background-color: #ffcc00; color: #1e1e24; }
-    QLabel { color: #e0e0e0; font-size: 11pt; }
+    QPushButton { background-color: #1c191e; color: #f0ece6; border: 1px solid #4a3a34; border-radius: 4px; padding: 6px 12px; font-weight: bold; }
+    QPushButton:hover { background-color: #2b2220; border-color: #f59b23; }
+    QPushButton:pressed { background-color: #f59b23; color: #0e0d10; }
+    QLabel { color: #d8d3cc; font-size: 10pt; }
    </string>
   </property>
   <widget class="QWidget" name="centralWidget">
    <layout class="QHBoxLayout" name="horizontalLayout">
-    <property name="spacing">
-     <number>12</number>
-    </property>
-    <property name="leftMargin">
-     <number>12</number>
-    </property>
-    <property name="topMargin">
-     <number>12</number>
-    </property>
-    <property name="rightMargin">
-     <number>12</number>
-    </property>
-    <property name="bottomMargin">
-     <number>12</number>
-    </property>
+    <property name="spacing"><number>12</number></property>
+    <property name="leftMargin"><number>12</number></property>
+    <property name="topMargin"><number>12</number></property>
+    <property name="rightMargin"><number>12</number></property>
+    <property name="bottomMargin"><number>12</number></property>
     <item>
      <widget class="QWidget" name="canvasContainer" native="true">
       <property name="sizePolicy">
@@ -50,7 +40,7 @@
        </sizepolicy>
       </property>
       <property name="styleSheet">
-       <string notr="true">background-color: #000000; border: 2px solid #555566; border-radius: 4px;</string>
+       <string notr="true">background-color: #050507; border: 2px solid #423530; border-radius: 4px;</string>
       </property>
      </widget>
     </item>
@@ -63,56 +53,40 @@
        </sizepolicy>
       </property>
       <property name="minimumSize">
-       <size>
-        <width>260</width>
-        <height>0</height>
-       </size>
+       <size><width>275</width><height>0</height></size>
       </property>
       <layout class="QVBoxLayout" name="verticalLayout">
        <item>
         <widget class="QLabel" name="titleLabel">
          <property name="font">
-          <font>
-           <pointsize>15</pointsize>
-           <bold>true</bold>
-          </font>
+          <font><pointsize>14</pointsize><bold>true</bold></font>
          </property>
          <property name="styleSheet">
-          <string notr="true">color: #ffcc00; margin-bottom: 6px;</string>
+          <string notr="true">color: #f59b23; margin-bottom: 6px;</string>
          </property>
          <property name="text">
-          <string>🏎️ RETRO KART 3D</string>
+          <string>KOLKATA: LAST EXIT</string>
          </property>
-         <property name="alignment">
-          <set>Qt::AlignCenter</set>
-         </property>
+         <property name="alignment"><set>Qt::AlignCenter</set></property>
         </widget>
        </item>
        <item>
         <widget class="QGroupBox" name="groupLevels">
-         <property name="title">
-          <string>Select Track Level</string>
-         </property>
+         <property name="title"><string>Select Escape Sector</string></property>
          <layout class="QVBoxLayout" name="levelLayout">
           <item>
            <widget class="QPushButton" name="btnLevel1">
-            <property name="text">
-             <string>Level 1: Donut Plains (Easy)</string>
-            </property>
+            <property name="text"><string>Medium: Gariahat Ruins</string></property>
            </widget>
           </item>
           <item>
            <widget class="QPushButton" name="btnLevel2">
-            <property name="text">
-             <string>Level 2: Choco Valley (Med)</string>
-            </property>
+            <property name="text"><string>Hard: Park St &amp; Maidan</string></property>
            </widget>
           </item>
           <item>
            <widget class="QPushButton" name="btnLevel3">
-            <property name="text">
-             <string>Level 3: Bowser's Castle (Hard)</string>
-            </property>
+            <property name="text"><string>Insane: Howrah Bridge</string></property>
            </widget>
           </item>
          </layout>
@@ -120,78 +94,43 @@
        </item>
        <item>
         <widget class="QGroupBox" name="groupTelemetry">
-         <property name="title">
-          <string>Telemetry &amp; Engine Stats</string>
-         </property>
+         <property name="title"><string>Rig &amp; Escape Telemetry</string></property>
          <layout class="QVBoxLayout" name="telemetryLayout">
-          <item>
-           <widget class="QLabel" name="lblSpeed">
-            <property name="text">
-             <string>Speed: 0.0 km/h</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QLabel" name="lblSurface">
-            <property name="text">
-             <string>Surface: Tarmac</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QLabel" name="lblLap">
-            <property name="text">
-             <string>Lap: 1 / 3</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QLabel" name="lblPos">
-            <property name="text">
-             <string>Pos: (512, 200)</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QLabel" name="lblHeading">
-            <property name="text">
-             <string>Heading: 90°</string>
-            </property>
-           </widget>
-          </item>
+          <item><widget class="QLabel" name="lblDistrict"><property name="text"><string>District: STANDBY</string></property></widget></item>
+          <item><widget class="QLabel" name="lblSpeed"><property name="text"><string>Speed: 0.0 km/h</string></property></widget></item>
+          <item><widget class="QLabel" name="lblSurface"><property name="text"><string>Surface: Cracked Asphalt</string></property></widget></item>
+          <item><widget class="QLabel" name="lblLap"><property name="text"><string>Hull: 100%  |  Evac: 95.0s</string></property></widget></item>
+          <item><widget class="QLabel" name="lblHeading"><property name="text"><string>Rank: 1/4 (0%)  •  ₹150</string></property></widget></item>
+          <item><widget class="QLabel" name="lblPos"><property name="text"><string>Pos: (512, 3800)</string></property></widget></item>
          </layout>
         </widget>
        </item>
        <item>
         <widget class="QGroupBox" name="groupControls">
-         <property name="title">
-          <string>Controls</string>
-         </property>
+         <property name="title"><string>Controls</string></property>
          <layout class="QVBoxLayout" name="controlsLayout">
           <item>
            <widget class="QLabel" name="lblCtrlHelp">
             <property name="text">
              <string>• W / Up : Accelerate
 • S / Down : Brake / Reverse
-• A / Left : Steer Left
-• D / Right : Steer Right
-• F : Finish Anim
-• R : Reset Kart</string>
+• A / D : Steer
+• Shift : Handbrake Slide
+• Space : Nitrous Boost
+• E : Use Tactical Gear
+• P : Checkpoint Pit-Stop
+• R : Resume Checkpoint</string>
             </property>
            </widget>
           </item>
           <item>
            <widget class="QPushButton" name="btnCelebration">
-            <property name="text">
-             <string>🎉 Finish Line Anim (F)</string>
-            </property>
+            <property name="text"><string>Garage &amp; Upgrades</string></property>
            </widget>
           </item>
           <item>
            <widget class="QPushButton" name="btnReset">
-            <property name="text">
-             <string>↺ Reset Kart (R)</string>
-            </property>
+            <property name="text"><string>↺ Restart Sector (R)</string></property>
            </widget>
           </item>
          </layout>
@@ -199,14 +138,9 @@
        </item>
        <item>
         <spacer name="verticalSpacer">
-         <property name="orientation">
-          <enum>Qt::Vertical</enum>
-         </property>
+         <property name="orientation"><enum>Qt::Vertical</enum></property>
          <property name="sizeHint" stdset="0">
-          <size>
-           <width>20</width>
-           <height>40</height>
-          </size>
+          <size><width>20</width><height>40</height></size>
          </property>
         </spacer>
        </item>

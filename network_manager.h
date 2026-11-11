@@ -42,6 +42,12 @@ struct NetPlayer {
     bool isSpinning = false;
     bool isDrifting = false;
     int heldItem = 0;
+    double hull = 100.0;
+    double progressMeters = 0.0;
+    bool isEliminated = false;
+    bool atCheckpoint = false;
+    int checkpointIdx = 0;
+    bool checkpointReady = false;
 };
 
 class NetworkManager : public QObject
@@ -66,9 +72,12 @@ public:
     void startRace();
 
     // In-Race Actions
-    void broadcastLocalKartState(double x, double z, double angle, double speed, int lap, bool finished, double finishTime, bool spinning, bool drifting, int heldItem);
+    void broadcastLocalKartState(double x, double z, double angle, double speed, int lap, bool finished, double finishTime, bool spinning, bool drifting, int heldItem,
+                                 double hull = 100.0, double progressMeters = 0.0, bool isEliminated = false);
     void sendItemEvent(int itemType, double x, double z, double angle);
     void notifyLocalFinish(double finishTime);
+    void sendCheckpointReady(int cpIndex, bool ready);
+    void sendEliminated();
     void returnToLobby();
 
     // Queries
@@ -95,6 +104,8 @@ signals:
     void remotePlayerFinished(int playerId, double finishTime, int placement);
     void allPlayersFinished();
     void returnedToLobby();
+    void checkpointLobbyUpdated();
+    void checkpointRolloutTriggered(int cpIndex);
     void connectionLost(const QString &reason);
 
 private slots:
